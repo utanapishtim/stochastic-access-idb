@@ -103,14 +103,13 @@ Store.prototype._write = function (offset, buf, cb) {
         block = buf.slice(j,j+len)
       } else {
         block = buffers[i]
-        buf.copy(block, o.start, j+o.start, j+o.end)
+        buf.copy(block, o.start, j, j+len)
       }
       store.put(block,self.name + '\0' + o.block)
       j += len
     }
-    store.transaction.addEventListener('complete', function () {
-      cb()
-    })
+    store.transaction.addEventListener('complete', function () { cb(null) })
+    store.transaction.addEventListener('error', cb)
   }
 }
 

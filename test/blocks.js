@@ -24,5 +24,15 @@ test('blocks', function (t) {
     { block: 23, start: 0, end: 5 },
     { block: 24, start: 0, end: 2 }
   ])
+  t.deepEqual(blocks(5,106,109), [
+    { block: 21, start: 1, end: 4 }
+  ])
+  t.deepEqual(blocks(5,107,110), [
+    { block: 21, start: 2, end: 5 }
+  ])
+  t.deepEqual(blocks(5,107,111), [
+    { block: 21, start: 2, end: 5 },
+    { block: 22, start: 0, end: 1 }
+  ])
   t.end()
 })
