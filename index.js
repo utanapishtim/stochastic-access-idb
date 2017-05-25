@@ -43,7 +43,7 @@ function Store (opts) {
   Abstract.call(this)
   if (!opts) opts = {}
   if (typeof opts === 'string') opts = { name: opts }
-  this.size = opts.size || 1024*16
+  this.size = opts.size || 4096
   this.name = opts.name
   this._getdb = opts.db
 }
