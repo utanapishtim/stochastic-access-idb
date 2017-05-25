@@ -15,7 +15,8 @@
     "tape": "^4.6.3"
   },
   "scripts": {
-    "test": "budo test/*.js"
+    "test": "browserify test/*.js | browser-run -b chrome",
+    "dev-test": "budo test/*.js"
   },
   "keywords": [
     "random-access",

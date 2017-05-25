@@ -64,14 +64,15 @@ Store.prototype._read = function (offset, length, cb) {
     if (err) return cb(err)
     var offsets = self._blocks(offset, offset+length)
     var pending = offsets.length
-    var firstBlock = offsets[0].block
+    var firstBlock = offsets.length > 0 ? offsets[0].block : 0
     var j = 0
     for (var i = 0; i < offsets.length; i++) (function (o) {
       var key = self.name + '\0' + o.block
       backify(store.get(key), function (err, ev) {
         if (err) return cb(err)
-        var b = ev.target.result.subarray(o.start,o.end)
-        buffers[o.block-firstBlock] = bufferFrom(b)
+        buffers[o.block-firstBlock] = ev.target.result
+          ? bufferFrom(ev.target.result.subarray(o.start,o.end))
+          : bufferAlloc(o.end-o.start)
         if (--pending === 0) cb(null, Buffer.concat(buffers))
       })
     })(offsets[i])
