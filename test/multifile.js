@@ -3,7 +3,7 @@ var random = require('../')('testing-' + Math.random(), { size: 5 })
 var bfrom = require('buffer-from')
 
 test('multiple files cool and good', function (t) {
-  t.plan(14)
+  t.plan(11)
   var cool = random('cool.txt')
   var and = random('and.txt')
   var good = random('good.txt')

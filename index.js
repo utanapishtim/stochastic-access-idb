@@ -28,8 +28,11 @@ module.exports = function (dbname, xopts) {
   } else {
     db = idb
   }
-  return function (opts) {
-    if (typeof opts === 'string') opts = { name: opts }
+  return function (name, opts) {
+    if (typeof name === 'object') {
+      opts = name
+      name = opts.name
+    }
     return new Store(Object.assign({ db: getdb }, xopts, opts))
   }
   function getdb (cb) {
