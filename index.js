@@ -48,6 +48,7 @@ function Store (opts) {
   if (typeof opts === 'string') opts = { name: opts }
   this.size = opts.size || 4096
   this.name = opts.name
+  this.length = opts.length || 0
   this._getdb = opts.db
 }
 inherits(Store, Abstract)
@@ -63,7 +64,7 @@ Store.prototype._read = function (offset, length, cb) {
   self._store('readonly', function (err, store) {
     if (err) return cb(err)
     var offsets = self._blocks(offset, offset+length)
-    var pending = offsets.length
+    var pending = offsets.length + 1
     var firstBlock = offsets.length > 0 ? offsets[0].block : 0
     var j = 0
     for (var i = 0; i < offsets.length; i++) (function (o) {
@@ -76,6 +77,7 @@ Store.prototype._read = function (offset, length, cb) {
         if (--pending === 0) cb(null, Buffer.concat(buffers))
       })
     })(offsets[i])
+    if (--pending === 0) cb(null, Buffer.concat(buffers))
   })
 }
 
@@ -112,7 +114,10 @@ Store.prototype._write = function (offset, buf, cb) {
       store.put(block,self.name + '\0' + o.block)
       j += len
     }
-    store.transaction.addEventListener('complete', function () { cb(null) })
+    store.transaction.addEventListener('complete', function () {
+      self.length = Math.max(self.length, offset + buf.length)
+      cb(null)
+    })
     store.transaction.addEventListener('error', cb)
   }
 }
