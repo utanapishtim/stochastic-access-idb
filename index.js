@@ -6,6 +6,8 @@ var blocks = require('./lib/blocks.js')
 var bufferFrom = require('buffer-from')
 var bufferAlloc = require('buffer-alloc')
 
+var DELIM = '\0'
+
 module.exports = function (dbname, xopts) {
   if (!xopts) xopts = {}
   var idb = xopts.idb || (typeof window !== 'undefined'
@@ -68,7 +70,7 @@ Store.prototype._read = function (offset, length, cb) {
     var firstBlock = offsets.length > 0 ? offsets[0].block : 0
     var j = 0
     for (var i = 0; i < offsets.length; i++) (function (o) {
-      var key = self.name + '\0' + o.block
+      var key = self.name + DELIM + o.block
       backify(store.get(key), function (err, ev) {
         if (err) return cb(err)
         buffers[o.block-firstBlock] = ev.target.result
@@ -92,7 +94,7 @@ Store.prototype._write = function (offset, buf, cb) {
     for (var i = 0; i < offsets.length; i++) (function (o,i) {
       if (o.end-o.start === self.size) return
       pending++
-      var key = self.name + '\0' + o.block
+      var key = self.name + DELIM + o.block
       backify(store.get(key), function (err, ev) {
         if (err) return cb(err)
         buffers[i] = bufferFrom(ev.target.result || bufferAlloc(self.size))
@@ -105,13 +107,13 @@ Store.prototype._write = function (offset, buf, cb) {
     for (var i = 0, j = 0; i < offsets.length; i++) {
       var o = offsets[i]
       var len = o.end - o.start
-      if (o.end-o.start === self.size) {
+      if (len === self.size) {
         block = buf.slice(j,j+len)
       } else {
         block = buffers[i]
         buf.copy(block, o.start, j, j+len)
       }
-      store.put(block,self.name + '\0' + o.block)
+      store.put(block,self.name + DELIM + o.block)
       j += len
     }
     store.transaction.addEventListener('complete', function () {
