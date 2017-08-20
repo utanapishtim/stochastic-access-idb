@@ -69,7 +69,9 @@ Store.prototype._read = function (offset, length, cb) {
   var buffers = []
   self._store('readonly', function (err, store) {
     backify(store.get(self.name + DELIM + "length"), function(err, ev) {
-      if ((ev.target.result || 0) < offset+length) return cb(new Error('Could not satisfy length'))
+      if ((ev.target.result || 0) < offset+length) {
+        return cb(new Error('Could not satisfy length'))
+      }
       if (err) return cb(err)
       var offsets = self._blocks(offset, offset+length)
       var pending = offsets.length + 1
