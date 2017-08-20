@@ -41,22 +41,27 @@ test.only('random', function (t) {
 
   function read (i) {
     if (i === nreads) return 
-    var offset = Math.floor(Math.random() * 5000)
+    var offset = Math.floor(Math.random() * 6500) // 15% error rate, due to offset or length running past end of file
     var len = Math.floor(Math.random()*1000)
     var pending = 2, data = { mstore: null, istore: null }
     istore.read(offset, len, function (err, buf) {
-      t.ifError(err)
+      data.ierr = err
       data.istore = buf
       if (--pending === 0) check()
     })
     mstore.read(offset, len, function (err, buf) {
-      t.ifError(err)
+      data.merr = err
       data.mstore = buf
       if (--pending === 0) check()
     })
     function check () {
-      t.ok(bequal(data.istore, data.mstore),
-        'read: offset=' + offset + ', length=' + len)
+      if (data.merr || data.ierr) {
+        t.ok((data.ierr && data.merr),
+          'read: offset=' + offset + ', length=' + len)
+      } else {
+        t.ok(bequal(data.istore, data.mstore),
+          'read: offset=' + offset + ', length=' + len)
+      }
       read(i+1)
     }
   }

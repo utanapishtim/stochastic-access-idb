@@ -68,22 +68,25 @@ Store.prototype._read = function (offset, length, cb) {
   cb = once(cb)
   var buffers = []
   self._store('readonly', function (err, store) {
-    if (err) return cb(err)
-    var offsets = self._blocks(offset, offset+length)
-    var pending = offsets.length + 1
-    var firstBlock = offsets.length > 0 ? offsets[0].block : 0
-    var j = 0
-    for (var i = 0; i < offsets.length; i++) (function (o) {
-      var key = self.name + DELIM + o.block
-      backify(store.get(key), function (err, ev) {
-        if (err) return cb(err)
-        buffers[o.block-firstBlock] = ev.target.result
-          ? bufferFrom(ev.target.result.subarray(o.start,o.end))
-          : bufferAlloc(o.end-o.start)
-        if (--pending === 0) cb(null, Buffer.concat(buffers))
-      })
-    })(offsets[i])
-    if (--pending === 0) cb(null, Buffer.concat(buffers))
+    backify(store.get(self.name + DELIM + "length"), function(err, ev) {
+      if ((ev.target.result || 0) < offset+length) return cb(new Error('Could not satisfy length'))
+      if (err) return cb(err)
+      var offsets = self._blocks(offset, offset+length)
+      var pending = offsets.length + 1
+      var firstBlock = offsets.length > 0 ? offsets[0].block : 0
+      var j = 0
+      for (var i = 0; i < offsets.length; i++) (function (o) {
+        var key = self.name + DELIM + o.block
+        backify(store.get(key), function (err, ev) {
+          if (err) return cb(err)
+          buffers[o.block-firstBlock] = ev.target.result
+            ? bufferFrom(ev.target.result.subarray(o.start,o.end))
+            : bufferAlloc(o.end-o.start)
+          if (--pending === 0) cb(null, Buffer.concat(buffers))
+        })
+      })(offsets[i])
+      if (--pending === 0) cb(null, Buffer.concat(buffers))
+    })
   })
 }
 
@@ -120,8 +123,10 @@ Store.prototype._write = function (offset, buf, cb) {
       store.put(block,self.name + DELIM + o.block)
       j += len
     }
-    store.transaction.addEventListener('complete', function () {
-      self.length = Math.max(self.length, offset + buf.length)
+    var length = Math.max(self.length || 0, offset + buf.length)
+    store.put(length, self.name + DELIM + "length")
+      store.transaction.addEventListener('complete', function () {
+      self.length = length
       cb(null)
     })
     store.transaction.addEventListener('error', cb)
