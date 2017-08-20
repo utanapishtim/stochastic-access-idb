@@ -35,6 +35,10 @@ module.exports = function (dbname, xopts) {
       opts = name
       name = opts.name
     }
+
+    if (!opts) opts = {}
+    opts.name = name
+
     return new Store(Object.assign({ db: getdb }, xopts, opts))
   }
   function getdb (cb) {
