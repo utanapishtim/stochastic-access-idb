@@ -7,7 +7,7 @@ var balloc = require('buffer-alloc')
 
 test.only('random', function (t) {
   var nwrites = 500, nreads = 500
-  t.plan(2 + nwrites*2 + nreads*3)
+  t.plan(2 + nwrites*2 + nreads)
   var istore = rai('cool.txt')
   var mstore = ram('cool.txt')
 
@@ -41,7 +41,8 @@ test.only('random', function (t) {
 
   function read (i) {
     if (i === nreads) return 
-    var offset = Math.floor(Math.random() * 6500) // 15% error rate, due to offset or length running past end of file
+    // 15% error rate, due to offset or length running past end of file
+    var offset = Math.floor(Math.random() * 6500)
     var len = Math.floor(Math.random()*1000)
     var pending = 2, data = { mstore: null, istore: null }
     istore.read(offset, len, function (err, buf) {
