@@ -127,7 +127,7 @@ Store.prototype._write = function (offset, buf, cb) {
     }
     var length = Math.max(self.length || 0, offset + buf.length)
     store.put(length, self.name + DELIM + "length")
-      store.transaction.addEventListener('complete', function () {
+    store.transaction.addEventListener('complete', function () {
       self.length = length
       cb(null)
     })
