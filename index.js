@@ -146,6 +146,18 @@ Store.prototype._store = function (mode, cb) {
   })
 }
 
+Store.prototype._open = function(cb) {
+  var self = this
+  this._getdb(function(db) {
+    self._store('readonly', function (err, store) {
+      backify(store.get(self.name + DELIM + "length"), function(err, ev) {
+        self.length = ev.target.result || 0
+        cb(null)
+      })
+    })
+  })
+}
+
 function backify (r, cb) {
   r.addEventListener('success', function (ev) { cb(null, ev) })
   r.addEventListener('error', cb)
