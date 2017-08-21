@@ -1,7 +1,7 @@
 {
   "name": "random-access-idb",
   "description": "[random-access][1]-compatible indexedDB storage layer",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "main": "index.js",
   "dependencies": {
     "abstract-random-access": "^1.1.2",
