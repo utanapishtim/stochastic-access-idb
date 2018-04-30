@@ -5,7 +5,7 @@ var randombytes = require('randombytes')
 var bequal = require('buffer-equals')
 var balloc = require('buffer-alloc')
 
-test.only('random', function (t) {
+test('reopen', function (t) {
   var nwrites = 100, nreads = 100
   t.plan(2 + nwrites*2 + nreads)
 
@@ -44,7 +44,7 @@ test.only('random', function (t) {
   }
 
   function read (i) {
-    if (i === nreads) return 
+    if (i === nreads) return
     var offset = Math.floor(Math.random() * 650)
     var len = Math.floor(Math.random()*100)
     var pending = 2, idata = {}, mdata = {}

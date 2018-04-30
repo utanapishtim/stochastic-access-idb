@@ -4,7 +4,7 @@
   "version": "1.0.4",
   "main": "index.js",
   "dependencies": {
-    "abstract-random-access": "^1.1.2",
+    "random-access-storage": "^1.1.1",
     "buffer-alloc": "^1.1.0",
     "buffer-from": "^0.1.1",
     "inherits": "^2.0.3",
@@ -14,6 +14,7 @@
   },
   "devDependencies": {
     "buffer-equals": "^1.0.4",
+    "random-access-memory": "^3.0.0",
     "randombytes": "^2.0.5",
     "tape": "^4.6.3"
   },

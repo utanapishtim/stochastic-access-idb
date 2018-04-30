@@ -5,7 +5,7 @@ var randombytes = require('randombytes')
 var bequal = require('buffer-equals')
 var balloc = require('buffer-alloc')
 
-test.only('random', function (t) {
+test('random', function (t) {
   var nwrites = 500, nreads = 500
   t.plan(2 + nwrites*2 + nreads)
   var istore = rai('cool.txt')
@@ -40,7 +40,7 @@ test.only('random', function (t) {
   }
 
   function read (i) {
-    if (i === nreads) return 
+    if (i === nreads) return
     // 15% error rate, due to offset or length running past end of file
     var offset = Math.floor(Math.random() * 6500)
     var len = Math.floor(Math.random()*1000)

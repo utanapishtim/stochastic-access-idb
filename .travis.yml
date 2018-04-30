@@ -1,0 +1,14 @@
+language: node_js
+addons:
+    chrome: stable
+	apt:
+		packages:
+            - xvfb
+os:
+    - linux
+before_install:
+    - npm install browser-run browserify -g
+	- export DISPLAY=':99.0'
+	- Xvfb :99 -screen 0 1024x768x24 > /dev/null 2>&1 &
+node_js:
+    - "8"
