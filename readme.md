@@ -2,6 +2,8 @@
 
 [random-access][1]-compatible indexedDB storage layer
 
+[![Build Status](https://travis-ci.org/random-access-storage/random-access-idb.svg?branch=master)](https://travis-ci.org/random-access-storage/random-access-idb)
+
 [1]: https://npmjs.com/package/abstract-random-access
 
 # example
@@ -9,7 +11,7 @@
 ``` js
 var random = require('random-access-idb')('dbname')
 var cool = random('cool.txt')
-cool.write(100, new Buffer('GREETINGS'), function (err) {
+cool.write(100, Buffer.from('GREETINGS'), function (err) {
   if (err) return console.error(err)
   cool.read(104, 3, function (err, buf) {
     if (err) return console.error(err)

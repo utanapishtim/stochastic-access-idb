@@ -13,13 +13,15 @@
     "once": "^1.4.0"
   },
   "devDependencies": {
+    "browser-run": "^5.0.0",
+    "browserify": "^16.2.0",
     "buffer-equals": "^1.0.4",
     "random-access-memory": "^3.0.0",
     "randombytes": "^2.0.5",
     "tape": "^4.6.3"
   },
   "scripts": {
-    "test": "browserify test/*.js | browser-run -b chrome",
+    "test": "browserify test/*.js | browser-run",
     "dev-test": "budo test/*.js"
   },
   "keywords": [
