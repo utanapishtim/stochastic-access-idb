@@ -31,7 +31,7 @@ test('multiple files cool and good', function (t) {
               t.ifError(err)
               t.equal(buf.toString(), '\0\0\0\0DO YOU')
               good.read(110, 10, function (err, buf) {
-                t.ok(err, "should error when reading past end of file")
+                t.ok(err, 'should error when reading past end of file')
               })
             })
           })

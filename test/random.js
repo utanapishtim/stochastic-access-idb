@@ -6,13 +6,14 @@ var bequal = require('buffer-equals')
 var balloc = require('buffer-alloc')
 
 test('random', function (t) {
-  var nwrites = 500, nreads = 500
-  t.plan(2 + nwrites*2 + nreads)
+  var nwrites = 500
+  var nreads = 500
+  t.plan(2 + nwrites * 2 + nreads)
   var istore = rai('cool.txt')
   var mstore = ram('cool.txt')
 
   ;(function () {
-    var zeros = balloc(5000+1000)
+    var zeros = balloc(5000 + 1000)
     var pending = 2
     istore.write(0, zeros, function (err) {
       t.ifError(err)
@@ -31,11 +32,11 @@ test('random', function (t) {
     var pending = 2
     istore.write(offset, buf, function (err) {
       t.ifError(err)
-      if (--pending === 0) write(i+1)
+      if (--pending === 0) write(i + 1)
     })
     mstore.write(offset, buf, function (err) {
       t.ifError(err)
-      if (--pending === 0) write(i+1)
+      if (--pending === 0) write(i + 1)
     })
   }
 
@@ -43,8 +44,9 @@ test('random', function (t) {
     if (i === nreads) return
     // 15% error rate, due to offset or length running past end of file
     var offset = Math.floor(Math.random() * 6500)
-    var len = Math.floor(Math.random()*1000)
-    var pending = 2, data = { mstore: null, istore: null }
+    var len = Math.floor(Math.random() * 1000)
+    var pending = 2
+    var data = { mstore: null, istore: null }
     istore.read(offset, len, function (err, buf) {
       data.ierr = err
       data.istore = buf
@@ -63,7 +65,7 @@ test('random', function (t) {
         t.ok(bequal(data.istore, data.mstore),
           'read: offset=' + offset + ', length=' + len)
       }
-      read(i+1)
+      read(i + 1)
     }
   }
 })
