@@ -6,6 +6,8 @@
 
 [1]: https://npmjs.com/package/abstract-random-access
 
+NB: This version is a fork of @substack's original [random-access-idb](https://github.com/substack/random-access-idb) that implements [random-access-storage](https://github.com/random-access-storage/random-access-storage) abstraction. It helps normalizing every random access instances and eases rai usage in modules like [random-access-network](https://github.com/substack/random-access-network).
+
 # example
 
 ``` js
