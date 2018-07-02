@@ -12,7 +12,9 @@ module.exports = function (dbname, xopts) {
   if (!xopts) xopts = {}
   var idb = xopts.idb || (typeof window !== 'undefined'
     ? window.indexedDB || window.mozIndexedDB || window.webkitIndexedDB || window.msIndexedDB
-    : null)
+    : !indexedDB
+      ? null
+      : indexedDB)
   if (!idb) throw new Error('indexedDB not present and not given')
   var db = null
   var dbqueue = []
