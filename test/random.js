@@ -2,7 +2,6 @@ var test = require('tape')
 var rai = require('../')('testing-' + Math.random(), { size: 256 })
 var ram = require('random-access-memory')
 var randombytes = require('randombytes')
-var bequal = require('buffer-equals')
 var balloc = require('buffer-alloc')
 
 test('random', function (t) {
@@ -62,7 +61,7 @@ test('random', function (t) {
         t.ok((data.ierr && data.merr),
           'read: offset=' + offset + ', length=' + len)
       } else {
-        t.ok(bequal(data.istore, data.mstore),
+        t.ok((data.istore).equals(data.mstore),
           'read: offset=' + offset + ', length=' + len)
       }
       read(i + 1)
