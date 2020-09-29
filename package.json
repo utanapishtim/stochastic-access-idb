@@ -1,7 +1,7 @@
 {
   "name": "random-access-idb",
   "description": "[random-access][1]-compatible indexedDB storage layer",
-  "version": "1.2.1",
+  "version": "1.3.0",
   "main": "index.js",
   "dependencies": {
     "random-access-storage": "^1.4.1",
@@ -20,9 +20,7 @@
     "tape": "^5.0.1"
   },
   "scripts": {
-    "test": "browserify test/index.js | browser-run",
-    "test-tests": "node ./test/tests.js",
-    "dev-test": "budo test/*.js"
+    "test": "browserify test/index.js | browser-run"
   },
   "keywords": [
     "random-access",
