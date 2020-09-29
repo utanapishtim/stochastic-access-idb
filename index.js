@@ -113,7 +113,7 @@ Store.prototype._write = function (req) {
   })
 
   function write (store, offsets, buffers) {
-    var block
+    var block = null;
     for (var i = 0, j = 0; i < offsets.length; i++) {
       var o = offsets[i]
       var len = o.end - o.start
