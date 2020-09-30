@@ -166,7 +166,7 @@ Store.prototype._open = function (req) {
 
 Store.prototype._close = function (req) {
   this._getdb(function (db) {
-    db.close()
+    //db.close()
     req.callback()
   })
 }
