@@ -31,9 +31,6 @@
     "browser",
     "storage"
   ],
-  "engines": {
-    "node": ">=12.0.0"
-  },
   "author": "substack",
   "license": "BSD"
 }
