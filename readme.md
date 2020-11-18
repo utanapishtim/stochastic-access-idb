@@ -8,6 +8,8 @@
 
 NB: This version is a fork of @substack's original [random-access-idb](https://github.com/substack/random-access-idb) that implements [random-access-storage](https://github.com/random-access-storage/random-access-storage) abstraction. It helps normalizing every random access instances and eases rai usage in modules like [random-access-network](https://github.com/substack/random-access-network).
 
+Substack's `idb.close()` function is removed from this branch as it appears to conflict with how [Corestore](https://github.com/andrewosh/corestore) opens and closes the RandomAccess Store, until further work can be done to gracefully handle closing state.
+
 # example
 
 ``` js

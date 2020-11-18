@@ -1,4 +1,4 @@
-var Abstract = require('random-access-storage')
+var RandomAccess = require('random-access-storage')
 var inherits = require('inherits')
 var nextTick = require('next-tick')
 var once = require('once')
@@ -10,11 +10,13 @@ var DELIM = '\0'
 
 module.exports = function (dbname, xopts) {
   if (!xopts) xopts = {}
-  var idb = xopts.idb || (typeof window !== 'undefined'
-    ? window.indexedDB || window.mozIndexedDB || window.webkitIndexedDB || window.msIndexedDB
-    : !indexedDB
-      ? null
-      : indexedDB)
+  
+  var win = typeof window !== 'undefined' ? window
+  : (typeof self !== 'undefined' ? self : {})
+
+  var idb = xopts.idb || (typeof win !== 'undefined'
+    ? win.indexedDB || win.mozIndexedDB || win.webkitIndexedDB || win.msIndexedDB
+    : null)
   if (!idb) throw new Error('indexedDB not present and not given')
   var db = null
   var dbqueue = []
@@ -51,7 +53,7 @@ module.exports = function (dbname, xopts) {
 
 function Store (opts) {
   if (!(this instanceof Store)) return new Store(opts)
-  Abstract.call(this)
+  RandomAccess.call(this)
   if (!opts) opts = {}
   if (typeof opts === 'string') opts = { name: opts }
   this.size = opts.size || 4096
@@ -59,7 +61,7 @@ function Store (opts) {
   this.length = opts.length || 0
   this._getdb = opts.db
 }
-inherits(Store, Abstract)
+inherits(Store, RandomAccess)
 
 Store.prototype._blocks = function (i, j) {
   return blocks(this.size, i, j)
@@ -116,7 +118,7 @@ Store.prototype._write = function (req) {
       var o = offsets[i]
       var len = o.end - o.start
       if (len === self.size) {
-        block = req.data.slice(j, j + len)
+        block = bufferFrom(req.data.slice(j, j + len))
       } else {
         block = buffers[i]
         req.data.copy(block, o.start, j, j + len)
@@ -131,7 +133,9 @@ Store.prototype._write = function (req) {
       self.length = length
       req.callback(null)
     })
-    store.transaction.addEventListener('error', req.callback)
+    store.transaction.addEventListener('error', function (err) {
+      req.callback(err)
+    })
   }
 }
 
@@ -157,6 +161,20 @@ Store.prototype._open = function (req) {
         req.callback(null)
       })
     })
+  })
+}
+
+Store.prototype._close = function (req) {
+  this._getdb(function (db) {
+    //db.close() // TODO: reopen gracefully. Close breaks with corestore, as innercorestore closes the db
+    req.callback()
+  })
+}
+
+Store.prototype._stat = function (req) {
+  var self = this
+  nextTick(function () {
+    req.callback(null, { size: self.length })
   })
 }
 
