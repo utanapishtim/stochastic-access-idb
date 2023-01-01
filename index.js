@@ -3,19 +3,30 @@ const isOptions = require('is-options')
 const b4a = require('b4a')
 const cenc = require('compact-encoding')
 
-const DEFAULT_PAGE_SIZE = 1024 * 4
-const LOGICAL_BLOCK_SIZE = 512
-const DEFAULT_PREFIX = 'random-access-storage/random-access-idb'
+const DEFAULT_PAGE_SIZE = 4 * 1024  // 4096
+const LOGICAL_BLOCK_SIZE = 1024 / 2 // 512
+const DEFAULT_PREFIX = 'random-access-idb'
 
 module.exports = class RandomAccessIDB extends RandomAccessStorage {
+
   size = DEFAULT_PAGE_SIZE
-  length = 0
+  indexedDB = window.indexedDB
+  version = 1
   prefix = DEFAULT_PREFIX
   name = null
   id = null
-  version = 1
   db = null
-  indexedDB = window.indexedDB
+  length = 0
+
+  static legacy (prefix, opts = {}) {
+    return function (name, _opts = {}) {
+      if (isOptions(name)) {
+        _opts = name
+        name = _opts.name
+      }
+      return new RandomAccessIDB(name, Object.assign({}, opts, _opts, { prefix }))
+    }
+  }
 
   constructor (name, opts = {}) {
     super()
@@ -34,11 +45,6 @@ module.exports = class RandomAccessIDB extends RandomAccessStorage {
     if (!name) throw new Error('Must provide name for random-access-idb instance!')
     this.name = name
     this.id = this.prefix + '/' + this.name
-  }
-
-  _store (mode) {
-    const txn = this.db.transaction([this.name], mode)
-    return txn.objectStore(this.name)
   }
 
   _open (req) {
@@ -90,20 +96,10 @@ module.exports = class RandomAccessIDB extends RandomAccessStorage {
   }
 
   _read (req) {
-    console.log('(read)')
-    console.log('(read.req.offset)', req.offset)
-    console.log('(read.req.size)', req.size)
-
     let idx = Math.floor(req.offset / this.size) // index of page
-    console.log('(read.idx)', idx)
-
     let rel = req.offset - idx * this.size // relative offset within the page
-    console.log('(read.rel)', rel)
-
     let start = 0
-    console.log('(read.start)', start)
 
-    console.log('(read!(req.offset + req.size > this.length))', req.offset + req.size, this.length, req.offset + req.size > this.length)
     if (req.offset + req.size > this.length) {
       return req.callback(new Error('Could not satisfy length'), null)
     }
@@ -112,19 +108,10 @@ module.exports = class RandomAccessIDB extends RandomAccessStorage {
 
     const onpage = (err, page) => {
       if (err) return req.callback(err)
-      console.log('(read/onpage)')
-      console.log('(read/onpage.idx)', idx)
-      console.log('(read/onpage.rel)', rel)
-      console.log('(read/onpage.start)', start)
       const avail = this.size - rel
-      console.log('(read/onpage.avail)', avail)
       const wanted = req.size - start
-      console.log('(read/onpage.wanted)', wanted)
       const len = (avail < wanted) ? avail : wanted
-      console.log('(read/onpage.len)', len)
       const end = rel + len
-      console.log('(read/onpage.end)', end)
-      console.log('(read/onpage.page)', page)
       if (page) b4a.copy(page, data, start, rel, rel + len)
       start += len
       rel = 0
@@ -140,44 +127,26 @@ module.exports = class RandomAccessIDB extends RandomAccessStorage {
   }
 
   _write (req) {
-    console.log('(write)')
-    console.log('(write.req.offset)', req.offset)
-    console.log('(write.req.size)', req.size)
-    console.log('(write.req.data)', req.data)
-    console.log('(write?this.size)', this.size)
     let idx = Math.floor(req.offset / this.size) 
     let rel = req.offset - idx * this.size
     let start = 0
-    console.log('(write/onpage.idx)', idx)
-    console.log('(write/onpage.rel)', rel)
-    console.log('(write/onpage.start)', start)
-    const len = req.offset + req.size
-    console.log('(write/onpage.len)', len)
-    const ops = []
 
+    const len = req.offset + req.size
+    const ops = []
 
     const onpage = (err, page) => {
       if (err) return req.callback(err)
-      console.log('(write/onpage)')
-      console.log('(write/onpage.idx)', idx)
-      console.log('(write/onpage.rel)', rel)
-      console.log('(write/onpage.start)', start)
-      const free = this.size - rel // how much space is left in the page from the page-relative offset
-      console.log('(write/onpage.free)', free)
-      const end = (free < (req.size - start)) ? start + free : req.size // if the amount of space left in the page is less than the data to write
-      console.log('(write/onpage.end)', end)
+      const free = this.size - rel
+      const end = (free < (req.size - start)) ? start + free : req.size
       b4a.copy(req.data, page, rel, start, end)
-      console.log('(write/onpage.page)', page)
       start = end
       rel = 0
       ops.push({ type: 'put', key: cenc.encode(cenc.lexint, idx), value: page })
-      console.log('(write/onpage!(start < req.size))', start, req.size, start < req.size)
       if (start < req.size) {
         idx++
         this._page(cenc.encode(cenc.lexint, idx), true, onpage)
       } else {
-        console.log('(write/onpage#write batch)', ops)
-        this._idbBatch(ops, (err) => {
+        this._batch(ops, (err) => {
           if (err) return req.callback(err)
           if (len > this.length) this.length = len
           return req.callback(null, null)
@@ -195,7 +164,7 @@ module.exports = class RandomAccessIDB extends RandomAccessStorage {
 
     const ops = []
 
-    this._idbGet(idx, (err, page) => {
+    this._get(cenc.encode(cenc.lexint, idx), (err, page) => {
       if (err) return req.callback(err)
       if (rel && req.offset + req.size >= this.length) {
         b4a.fill(page, 0, rel)
@@ -207,13 +176,15 @@ module.exports = class RandomAccessIDB extends RandomAccessStorage {
       }
 
       while (start < req.size) {
-        if (rel === 0 && req.size - start >= this.pageSize) ops.push({ type: 'del', key: idx })
+        if (rel === 0 && req.size - start >= this.size) {
+          ops.push({ type: 'del', key: cenc.encode(cenc.lexint, idx) })
+        }
         rel = 0
         idx += 1
         start += this.size - rel
       }
 
-      this._idbBatch(ops, (err) => {
+      this._batch(ops, (err) => {
         if (err) return req.callback(err)
         if (req.offset + req.size >= this.length) this.length = req.offset
         return req.callback(null)
@@ -232,7 +203,21 @@ module.exports = class RandomAccessIDB extends RandomAccessStorage {
     }
   }
 
-  _idbGet (key, cb) {
+  _page (key, upsert, cb) {
+    this._get(key, (err, page) => {
+      if (err) return cb(err)
+      if (page || !upsert) return cb(null, page)
+      page = b4a.alloc(this.size)
+      return cb(null, page)
+    })
+  }
+
+  _store (mode) {
+    const txn = this.db.transaction([this.name], mode)
+    return txn.objectStore(this.name)
+  }
+
+  _get (key, cb) {
     try {
       const store = this._store('readonly')
       const req = store.get(key)
@@ -244,31 +229,7 @@ module.exports = class RandomAccessIDB extends RandomAccessStorage {
     }
   }
 
-  _idbPut (key, val, cb) {
-    try {
-      const store = this._store('readwrite')
-      const req = store.put(val, key)
-      const txn = req.transaction
-      txn.onabort = () => cb(txn.error || new Error('idb put aborted'))
-      txn.oncomplete = () => cb(null, req.result)
-    } catch (err) {
-      return cb(err)
-    }
-  }
-
-  _idbDel (key, cb) {
-    try {
-      const store = this._store('readwrite')
-      const req = store.delete(key)
-      const txn = req.transaction
-      txn.onabort = () => cb(txn.error || new Error('idb del aborted'))
-      txn.oncomplete = () => cb(null, req.result)
-    } catch (err) {
-      return cb(err)
-    }
-  }
-
-  _idbBatch (ops = [], cb) {
+  _batch (ops = [], cb) {
     const store = this._store('readwrite')
     const txn = store.transaction
     let idx = 0
@@ -297,7 +258,7 @@ module.exports = class RandomAccessIDB extends RandomAccessStorage {
   _length (keys, cb) {
     if (keys.length === 0) return cb(null, 0)
     let kIndex = keys.length - 1
-    this._idbGet(keys[kIndex], onpage.bind(this))
+    this._get(keys[kIndex], onpage.bind(this))
      
     function onpage (err, page) {
       if (err) return cb(err)
@@ -308,7 +269,7 @@ module.exports = class RandomAccessIDB extends RandomAccessStorage {
       }
 
       kIndex--
-      if (kIndex >= 0) return this._idbGet(keys[kIndex], onpage.bind(this))
+      if (kIndex >= 0) return this._get(keys[kIndex], onpage.bind(this))
       return cb(null, 0)
     }
   }
@@ -318,14 +279,5 @@ module.exports = class RandomAccessIDB extends RandomAccessStorage {
     const req = store.getAllKeys()
     req.onerror = () => cb(req.error)
     req.onsuccess = () => cb(null, req.result)
-  }
-
-  _page (key, upsert, cb) {
-    this._idbGet(key, (err, page) => {
-      if (err) return cb(err)
-      if (page || !upsert) return cb(null, page)
-      page = b4a.alloc(this.size)
-      return cb(null, page)
-    })
   }
 }
