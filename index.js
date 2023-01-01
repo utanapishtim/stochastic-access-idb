@@ -1,184 +1,331 @@
-var RandomAccess = require('random-access-storage')
-var inherits = require('inherits')
-var nextTick = require('next-tick')
-var once = require('once')
-var blocks = require('./lib/blocks.js')
-var bufferFrom = require('buffer-from')
-var bufferAlloc = require('buffer-alloc')
+const RandomAccessStorage = require('random-access-storage')
+const isOptions = require('is-options')
+const b4a = require('b4a')
+const cenc = require('compact-encoding')
 
-var DELIM = '\0'
+const DEFAULT_PAGE_SIZE = 1024 * 4
+const LOGICAL_BLOCK_SIZE = 512
+const DEFAULT_PREFIX = 'random-access-storage/random-access-idb'
 
-module.exports = function (dbname, xopts) {
-  if (!xopts) xopts = {}
-  
-  var win = typeof window !== 'undefined' ? window
-  : (typeof self !== 'undefined' ? self : {})
+module.exports = class RandomAccessIDB extends RandomAccessStorage {
+  size = DEFAULT_PAGE_SIZE
+  length = 0
+  prefix = DEFAULT_PREFIX
+  name = null
+  id = null
+  version = 1
+  db = null
+  indexedDB = window.indexedDB
 
-  var idb = xopts.idb || (typeof win !== 'undefined'
-    ? win.indexedDB || win.mozIndexedDB || win.webkitIndexedDB || win.msIndexedDB
-    : null)
-  if (!idb) throw new Error('indexedDB not present and not given')
-  var db = null
-  var dbqueue = []
-  if (typeof idb.open === 'function') {
-    var req = idb.open(dbname)
-    req.addEventListener('upgradeneeded', function () {
-      db = req.result
-      db.createObjectStore('data')
-    })
-    req.addEventListener('success', function () {
-      db = req.result
-      dbqueue.forEach(function (cb) { cb(db) })
-      dbqueue = null
-    })
-  } else {
-    db = idb
-  }
-  return function (name, opts) {
-    if (typeof name === 'object') {
+  constructor (name, opts = {}) {
+    super()
+
+    if (isOptions(name)) {
       opts = name
       name = opts.name
     }
 
-    if (!opts) opts = {}
-    opts.name = name
+    if (opts.size) this.size = opts.size
+    if (opts.prefix) this.prefix = opts.prefix
+    if (opts.version) this.version = opts.version || this.version
+    if (opts.db) this.db = opts.db
+    if (opts.indexedDB) this.indexedDB = indexedDB
 
-    return new Store(Object.assign({ db: getdb }, xopts, opts))
+    if (!name) throw new Error('Must provide name for random-access-idb instance!')
+    this.name = name
+    this.id = this.prefix + '/' + this.name
   }
-  function getdb (cb) {
-    if (db) nextTick(function () { cb(db) })
-    else dbqueue.push(cb)
+
+  _store (mode) {
+    const txn = this.db.transaction([this.name], mode)
+    return txn.objectStore(this.name)
   }
-}
 
-function Store (opts) {
-  if (!(this instanceof Store)) return new Store(opts)
-  RandomAccess.call(this)
-  if (!opts) opts = {}
-  if (typeof opts === 'string') opts = { name: opts }
-  this.size = opts.size || 4096
-  this.name = opts.name
-  this.length = opts.length || 0
-  this._getdb = opts.db
-}
-inherits(Store, RandomAccess)
+  _open (req) {
+    const open = this.indexedDB.open(this.id, this.version)
 
-Store.prototype._blocks = function (i, j) {
-  return blocks(this.size, i, j)
-}
+    open.onerror = onerror
+    open.onsuccess = onopen.bind(this)
+    open.onupgradeneeded = onupgradeneeded.bind(this)
 
-Store.prototype._read = function (req) {
-  var self = this
-  var buffers = []
-  self._store('readonly', function (err, store) {
-    if ((self.length || 0) < req.offset + req.size) {
+    function onerror () {
+      req.callback(open.error || new Error('error opening indexedDB'))
+    }
+
+    function onopen () {
+      this.db = open.result
+      this._keys((err, keys) => {
+        if (err) return req.callback(err)
+        this._length(keys, (err, len) => {
+          if (err) return req.callback(err)
+          this.length = len
+          return req.callback(null)
+        })
+      })
+    }
+
+    function onupgradeneeded (event) {
+      const db = event.target.result
+      if (!db.objectStoreNames.contains(this.name)) db.createObjectStore(this.name)
+    }
+  }
+
+  _close (req) {
+    this.db.close()
+    return req.callback(null, null)
+  }
+
+  _stat (req) {
+    const st = {
+      size: this.length,
+      blksize: this.size,
+      blocks: 0
+    }
+
+    this._keys((err, keys) => {
+      if (err) return req.callback(err)
+      st.blocks = Math.ceil((keys.length * this.size) / LOGICAL_BLOCK_SIZE)
+      return req.callback(null, st)
+    })
+  }
+
+  _read (req) {
+    console.log('(read)')
+    console.log('(read.req.offset)', req.offset)
+    console.log('(read.req.size)', req.size)
+
+    let idx = Math.floor(req.offset / this.size) // index of page
+    console.log('(read.idx)', idx)
+
+    let rel = req.offset - idx * this.size // relative offset within the page
+    console.log('(read.rel)', rel)
+
+    let start = 0
+    console.log('(read.start)', start)
+
+    console.log('(read!(req.offset + req.size > this.length))', req.offset + req.size, this.length, req.offset + req.size > this.length)
+    if (req.offset + req.size > this.length) {
       return req.callback(new Error('Could not satisfy length'), null)
     }
-    if (err) return req.callback(err)
-    var offsets = self._blocks(req.offset, req.offset + req.size)
-    var pending = offsets.length + 1
-    var firstBlock = offsets.length > 0 ? offsets[0].block : 0
-    for (var i = 0; i < offsets.length; i++) (function (o) {
-      var key = self.name + DELIM + o.block
-      backify(store.get(key), function (err, ev) {
-        if (err) return req.callback(err)
-        buffers[o.block - firstBlock] = ev.target.result
-          ? bufferFrom(ev.target.result.subarray(o.start, o.end))
-          : bufferAlloc(o.end - o.start)
-        if (--pending === 0) req.callback(null, Buffer.concat(buffers))
-      })
-    })(offsets[i])
-    if (--pending === 0) req.callback(null, Buffer.concat(buffers))
-  })
-}
 
-Store.prototype._write = function (req) {
-  var self = this
-  self._store('readwrite', function (err, store) {
-    if (err) return req.callback(err)
-    var offsets = self._blocks(req.offset, req.offset + req.data.length)
-    var pending = 1
-    var buffers = {}
-    for (var i = 0; i < offsets.length; i++) (function (o, i) {
-      if (o.end - o.start === self.size) return
-      pending++
-      var key = self.name + DELIM + o.block
-      backify(store.get(key), function (err, ev) {
-        if (err) return req.callback(err)
-        buffers[i] = bufferFrom(ev.target.result || bufferAlloc(self.size))
-        if (--pending === 0) write(store, offsets, buffers)
-      })
-    })(offsets[i], i)
-    if (--pending === 0) write(store, offsets, buffers)
-  })
+    const data = b4a.alloc(req.size)
 
-  function write (store, offsets, buffers) {
-    var block
-    for (var i = 0, j = 0; i < offsets.length; i++) {
-      var o = offsets[i]
-      var len = o.end - o.start
-      if (len === self.size) {
-        block = bufferFrom(req.data.slice(j, j + len))
+    const onpage = (err, page) => {
+      if (err) return req.callback(err)
+      console.log('(read/onpage)')
+      console.log('(read/onpage.idx)', idx)
+      console.log('(read/onpage.rel)', rel)
+      console.log('(read/onpage.start)', start)
+      const avail = this.size - rel
+      console.log('(read/onpage.avail)', avail)
+      const wanted = req.size - start
+      console.log('(read/onpage.wanted)', wanted)
+      const len = (avail < wanted) ? avail : wanted
+      console.log('(read/onpage.len)', len)
+      const end = rel + len
+      console.log('(read/onpage.end)', end)
+      console.log('(read/onpage.page)', page)
+      if (page) b4a.copy(page, data, start, rel, rel + len)
+      start += len
+      rel = 0
+      idx++
+      if (start < req.size) {
+        return this._page(cenc.encode(cenc.lexint, idx), false, onpage)
       } else {
-        block = buffers[i]
-        req.data.copy(block, o.start, j, j + len)
+        return req.callback(null, data)
       }
-      store.put(block, self.name + DELIM + o.block)
-      j += len
     }
 
-    var length = Math.max(self.length || 0, req.offset + req.data.length)
-    store.put(length, self.name + DELIM + 'length')
-    store.transaction.addEventListener('complete', function () {
-      self.length = length
-      req.callback(null)
-    })
-    store.transaction.addEventListener('error', function (err) {
-      req.callback(err)
-    })
+    this._page(cenc.encode(cenc.lexint, idx), false, onpage)
   }
-}
 
-Store.prototype._store = function (mode, cb) {
-  cb = once(cb)
-  var self = this
-  self._getdb(function (db) {
-    var tx = db.transaction(['data'], mode)
-    var store = tx.objectStore('data')
-    tx.addEventListener('error', cb)
-    cb(null, store)
-  })
-}
+  _write (req) {
+    console.log('(write)')
+    console.log('(write.req.offset)', req.offset)
+    console.log('(write.req.size)', req.size)
+    console.log('(write.req.data)', req.data)
+    console.log('(write?this.size)', this.size)
+    let idx = Math.floor(req.offset / this.size) 
+    let rel = req.offset - idx * this.size
+    let start = 0
+    console.log('(write/onpage.idx)', idx)
+    console.log('(write/onpage.rel)', rel)
+    console.log('(write/onpage.start)', start)
+    const len = req.offset + req.size
+    console.log('(write/onpage.len)', len)
+    const ops = []
 
-Store.prototype._open = function (req) {
-  var self = this
-  this._getdb(function (db) {
-    self._store('readonly', function (err, store) {
+
+    const onpage = (err, page) => {
       if (err) return req.callback(err)
-      backify(store.get(self.name + DELIM + 'length'), function (err, ev) {
+      console.log('(write/onpage)')
+      console.log('(write/onpage.idx)', idx)
+      console.log('(write/onpage.rel)', rel)
+      console.log('(write/onpage.start)', start)
+      const free = this.size - rel // how much space is left in the page from the page-relative offset
+      console.log('(write/onpage.free)', free)
+      const end = (free < (req.size - start)) ? start + free : req.size // if the amount of space left in the page is less than the data to write
+      console.log('(write/onpage.end)', end)
+      b4a.copy(req.data, page, rel, start, end)
+      console.log('(write/onpage.page)', page)
+      start = end
+      rel = 0
+      ops.push({ type: 'put', key: cenc.encode(cenc.lexint, idx), value: page })
+      console.log('(write/onpage!(start < req.size))', start, req.size, start < req.size)
+      if (start < req.size) {
+        idx++
+        this._page(cenc.encode(cenc.lexint, idx), true, onpage)
+      } else {
+        console.log('(write/onpage#write batch)', ops)
+        this._idbBatch(ops, (err) => {
+          if (err) return req.callback(err)
+          if (len > this.length) this.length = len
+          return req.callback(null, null)
+        })
+      }
+    }
+
+    this._page(cenc.encode(cenc.lexint, idx), true, onpage)
+  }
+
+  _del (req) {
+    let idx = Math.floor(req.offset / this.size)
+    let rel = req.offset - idx * this.size
+    let start = 0
+
+    const ops = []
+
+    this._idbGet(idx, (err, page) => {
+      if (err) return req.callback(err)
+      if (rel && req.offset + req.size >= this.length) {
+        b4a.fill(page, 0, rel)
+        ops.push({ type: 'put', key: cenc.encode(cenc.lexint, idx), value: page })
+      }
+
+      if (req.offset + req.size > this.length) {
+        req.size = Math.max(0, this.length - req.offset)
+      }
+
+      while (start < req.size) {
+        if (rel === 0 && req.size - start >= this.pageSize) ops.push({ type: 'del', key: idx })
+        rel = 0
+        idx += 1
+        start += this.size - rel
+      }
+
+      this._idbBatch(ops, (err) => {
         if (err) return req.callback(err)
-        self.length = ev.target.result || 0
-        req.callback(null)
+        if (req.offset + req.size >= this.length) this.length = req.offset
+        return req.callback(null)
       })
     })
-  })
-}
+  }
 
-Store.prototype._close = function (req) {
-  this._getdb(function (db) {
-    //db.close() // TODO: reopen gracefully. Close breaks with corestore, as innercorestore closes the db
-    req.callback()
-  })
-}
+  _unlink (req) {
+    const store = this._store('readwrite')
+    const clear = store.clear()
+    clear.onerror = () => req.callback(clear.error)
+    clear.onsuccess = () => {
+      const del = this.indexedDB.deleteDatabase(this.id)
+      del.onerror = () => req.callback(del.error)
+      del.onsuccess = () => req.callback(null) 
+    }
+  }
 
-Store.prototype._stat = function (req) {
-  var self = this
-  nextTick(function () {
-    req.callback(null, { size: self.length })
-  })
-}
+  _idbGet (key, cb) {
+    try {
+      const store = this._store('readonly')
+      const req = store.get(key)
+      const txn = req.transaction
+      txn.onabort = () => cb(txn.error || new Error('idb get aborted'))
+      txn.oncomplete = () => cb(null, req.result)
+    } catch (err) {
+      return cb(err)
+    }
+  }
 
-function backify (r, cb) {
-  r.addEventListener('success', function (ev) { cb(null, ev) })
-  r.addEventListener('error', cb)
+  _idbPut (key, val, cb) {
+    try {
+      const store = this._store('readwrite')
+      const req = store.put(val, key)
+      const txn = req.transaction
+      txn.onabort = () => cb(txn.error || new Error('idb put aborted'))
+      txn.oncomplete = () => cb(null, req.result)
+    } catch (err) {
+      return cb(err)
+    }
+  }
+
+  _idbDel (key, cb) {
+    try {
+      const store = this._store('readwrite')
+      const req = store.delete(key)
+      const txn = req.transaction
+      txn.onabort = () => cb(txn.error || new Error('idb del aborted'))
+      txn.oncomplete = () => cb(null, req.result)
+    } catch (err) {
+      return cb(err)
+    }
+  }
+
+  _idbBatch (ops = [], cb) {
+    const store = this._store('readwrite')
+    const txn = store.transaction
+    let idx = 0
+    let error = null
+    txn.onabort = () => cb(error || txn.error || new Error('idb batch op aborted'))
+    txn.oncomplete = () => cb(null)
+
+    function next () {
+      const op = ops[idx++]
+      const { type, key, value } = op
+      try {
+        const req = (type === 'del') ? store.delete(key) : store.put(value, key)
+        req.onerror = (err) => console.error(`batch error: ${err}`)
+        if (idx < ops.length) req.onsuccess = next
+        else if (typeof txn.commit === 'function') txn.commit()
+      } catch (err) {
+        error = err
+        txn.abort()
+        return
+      }
+    }
+
+    next()
+  }
+
+  _length (keys, cb) {
+    if (keys.length === 0) return cb(null, 0)
+    let kIndex = keys.length - 1
+    this._idbGet(keys[kIndex], onpage.bind(this))
+     
+    function onpage (err, page) {
+      if (err) return cb(err)
+      for (let bIndex = page.length - 1; bIndex >= 0; bIndex--) {
+        if (page[bIndex] !== 0) continue
+        const pIndex = cenc.decode(cenc.lexint, keys[kIndex])
+        return cb(null, (pIndex * this.size) - (page.length - i))
+      }
+
+      kIndex--
+      if (kIndex >= 0) return this._idbGet(keys[kIndex], onpage.bind(this))
+      return cb(null, 0)
+    }
+  }
+
+  _keys (cb) {
+    const store = this._store('readonly')
+    const req = store.getAllKeys()
+    req.onerror = () => cb(req.error)
+    req.onsuccess = () => cb(null, req.result)
+  }
+
+  _page (key, upsert, cb) {
+    this._idbGet(key, (err, page) => {
+      if (err) return cb(err)
+      if (page || !upsert) return cb(null, page)
+      page = b4a.alloc(this.size)
+      return cb(null, page)
+    })
+  }
 }
