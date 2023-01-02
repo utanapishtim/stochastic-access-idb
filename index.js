@@ -9,7 +9,6 @@ const LOGICAL_BLOCK_SIZE = 1024 / 2 // 512
 const DEFAULT_PREFIX = 'random-access-idb'
 
 module.exports = class RandomAccessIDB extends RandomAccessStorage {
-
   size = DEFAULT_PAGE_SIZE
   indexedDB = window.indexedDB
   version = 1
