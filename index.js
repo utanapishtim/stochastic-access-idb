@@ -1,3 +1,4 @@
+const { promisify } = require('util')
 const RandomAccessStorage = require('random-access-storage')
 const isOptions = require('is-options')
 const b4a = require('b4a')
@@ -112,12 +113,11 @@ module.exports = class RandomAccessIDB extends RandomAccessStorage {
       const wanted = req.size - start
       const len = (avail < wanted) ? avail : wanted
       const end = rel + len
-      if (page) b4a.copy(page, data, start, rel, rel + len)
+      if (page) b4a.copy(page, data, start, rel, end)
       start += len
       rel = 0
-      idx++
       if (start < req.size) {
-        return this._page(cenc.encode(cenc.lexint, idx), false, onpage)
+        return this._page(cenc.encode(cenc.lexint, ++idx), false, onpage)
       } else {
         return req.callback(null, data)
       }
@@ -143,14 +143,15 @@ module.exports = class RandomAccessIDB extends RandomAccessStorage {
       rel = 0
       ops.push({ type: 'put', key: cenc.encode(cenc.lexint, idx), value: page })
       if (start < req.size) {
-        idx++
-        this._page(cenc.encode(cenc.lexint, idx), true, onpage)
+        this._page(cenc.encode(cenc.lexint, ++idx), true, onpage)
       } else {
-        this._batch(ops, (err) => {
+        this._batch(ops, onbatch.bind(this))
+
+        function onbatch (err) {
           if (err) return req.callback(err)
           if (len > this.length) this.length = len
           return req.callback(null, null)
-        })
+        }
       }
     }
 
@@ -255,6 +256,13 @@ module.exports = class RandomAccessIDB extends RandomAccessStorage {
     next()
   }
 
+  _keys (cb) {
+    const store = this._store('readonly')
+    const req = store.getAllKeys()
+    req.onerror = () => cb(req.error)
+    req.onsuccess = () => cb(null, req.result)
+  }
+
   _length (keys, cb) {
     if (keys.length === 0) return cb(null, 0)
     let kIndex = keys.length - 1
@@ -274,10 +282,12 @@ module.exports = class RandomAccessIDB extends RandomAccessStorage {
     }
   }
 
-  _keys (cb) {
-    const store = this._store('readonly')
-    const req = store.getAllKeys()
-    req.onerror = () => cb(req.error)
-    req.onsuccess = () => cb(null, req.result)
+  promisify () {
+    const fns = ['open', 'read', 'write', 'del', 'truncate', 'stat', 'suspend', 'close', 'unlink']
+    const props = ['size', 'indexedDB', 'version', 'prefix', 'name', 'id', 'db', 'length']
+    const iface = {}
+    for (const fn of fns) iface[fn] = promisify(this[fn].bind(this))
+    for (const prop of props) Object.assign(iface, { get [prop] () { return this[prop] } })
+    return iface
   }
 }

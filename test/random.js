@@ -1,70 +1,111 @@
-var test = require('tape')
-var rai = require('../')('testing-' + Math.random(), { size: 256 })
-var ram = require('random-access-memory')
-var randombytes = require('randombytes')
-var balloc = require('buffer-alloc')
+const util = require('util')
+const test = require('tape')
+const RAM = require('random-access-memory')
+const b4a = require('b4a')
+const randombytes = require('randombytes')
+const RAI = require('../')
+
+/**
+ * 
+ * perform a rai instance of some size and a ram instance
+ * perform a random number of writes to both instances
+ * ensure both instances are equivalent
+ * 
+ * - del = offset, size
+ * - write = offset, data
+ * - read = offset, size
+ */
 
 test('random', function (t) {
-  var nwrites = 500
-  var nreads = 500
-  t.plan(2 + nwrites * 2 + nreads)
-  var istore = rai('cool.txt')
-  var mstore = ram('cool.txt')
+  const size = sample(1, Math.pow(1024, sample(1, 2))) // page size
 
-  ;(function () {
-    var zeros = balloc(5000 + 1000)
-    var pending = 2
-    istore.write(0, zeros, function (err) {
-      t.ifError(err)
-      if (--pending === 0) write(0)
-    })
-    mstore.write(0, zeros, function (err) {
-      t.ifError(err)
-      if (--pending === 0) write(0)
-    })
-  })()
+  const rai = new RAI('test', { size })
+  const ram = new RAM({ pageSize: size })
 
-  function write (i) {
-    if (i === nwrites) return read(0)
-    var offset = Math.floor(Math.random() * 5000)
-    var buf = randombytes(Math.floor(Math.random() * 1000))
-    var pending = 2
-    istore.write(offset, buf, function (err) {
-      t.ifError(err)
-      if (--pending === 0) write(i + 1)
-    })
-    mstore.write(offset, buf, function (err) {
-      t.ifError(err)
-      if (--pending === 0) write(i + 1)
-    })
-  }
+  const max = sample(size, size * 100) // max size of storage
+  const wnum = sample(10, 100) // number of random write ops
+  const rnum = sample(1, 3) // number of random read ops per write
 
-  function read (i) {
-    if (i === nreads) return
-    // 15% error rate, due to offset or length running past end of file
-    var offset = Math.floor(Math.random() * 6500)
-    var len = Math.floor(Math.random() * 1000)
-    var pending = 2
-    var data = { mstore: null, istore: null }
-    istore.read(offset, len, function (err, buf) {
-      data.ierr = err
-      data.istore = buf
-      if (--pending === 0) check()
-    })
-    mstore.read(offset, len, function (err, buf) {
-      data.merr = err
-      data.mstore = buf
-      if (--pending === 0) check()
-    })
-    function check () {
-      if (data.merr || data.ierr) {
-        t.ok((data.ierr && data.merr),
-          'read: offset=' + offset + ', length=' + len)
-      } else {
-        t.ok((data.istore).equals(data.mstore),
-          'read: offset=' + offset + ', length=' + len)
+  const plan = (wnum * (rnum + 1)) + 1
+  t.plan(plan)
+
+  wnext(wnum)
+
+  function onfinished () {
+    const maxidx = Math.floor((rai.length - 1) / rai.size)
+    const eql = []
+    rnext(0)
+
+    function rnext (idx) {
+      if (idx > maxidx) return t.ok(eql.every(Boolean))
+      const bufs = []
+
+      rai.read(idx, size, onread)
+      ram.read(idx, size, onread)
+
+      function onread (err, buf) {
+        if (err) return t.fail(err.message)
+        bufs.push(buf)
+        if (bufs.length < 2) return
+        eql.push(!b4a.compare(...bufs))
+        return rnext(idx + 1)
       }
-      read(i + 1)
+    }
+  }
+  
+  function wnext (i) {
+    if (i === 0) return onfinished()
+    const offset = sample(0, max - 1)
+    const size = sample(0, (max - 1) - offset)
+    const data = randombytes(size)
+
+    let ws = 2 // pending writes
+
+    rai.write(offset, data, onwrite)
+    ram.write(offset, data, onwrite)
+
+    function onwrite (err) {
+      if (err) return t.fail(err.message)
+      if (--ws > 0) return
+      t.equals(rai.length, ram.length)
+      rnext(rnum)
+
+      function rnext (j) {
+        if (j === 0) return wnext(i - 1)
+        const offset = sample(0, rai.length - 1)
+        const size = sample(1, (rai.length - 1) - offset)
+        let bufs = []
+        rai.read(offset, size, onread)
+        ram.read(offset, size, onread)
+
+        function onread (err, buf) {
+          if (err) return t.fail(err.message)
+          bufs.push(buf)
+          if (bufs.length < 2) return
+          t.ok(b4a.compare(...bufs) === 0)
+          return rnext(j - 1)
+        }
+      }
     }
   }
 })
+
+let exitCode = 0
+test.onFailure(function () {
+  exitCode = 1
+})
+
+test.onFinish(function () {
+  window && window.close()
+  process.exit(exitCode)
+})
+
+
+function sample (min, max) {
+  if (min > max) {
+    const tmp = max
+    max = min
+    min = tmp
+  }
+  return Math.floor(Math.random() * (max - min + 1) + min)
+}
