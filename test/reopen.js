@@ -1,67 +1,66 @@
-var test = require('tape')
-var rai = require('../')('testing-' + Math.random(), { size: 256 })
-var ram = require('random-access-memory')
-var randombytes = require('randombytes')
-var balloc = require('buffer-alloc')
+const b4a = require('b4a')
+const test = require('brittle')
+const randombytes = require('randombytes')
+const RAM = require('random-access-memory')
+const RAI = require('..')
+const { sample, write, read, del, truncate, close, open } = require('./helpers')
 
-test('reopen', function (t) {
-  var nwrites = 100
-  var nreads = 100
-  t.plan(2 + nwrites * 2 + nreads)
+const size = 1024
+const storage = (name = `name-${Math.random()}`, opts = {}) => new RAI({ prefix: `prefix-${Math.random()}`, name, size, ...opts })
 
-  // this test differs from random.js in that it interleaves writes/reads, and randomly reopens the idb based storage some of the time
-  var store = rai('cool.txt')
-  function istore () { if (Math.random() > 0.75) store = rai('cool.txt'); return store }
-
-  var mstore = ram('cool.txt')
-
-  ;(function () {
-    var zeros = balloc(500 + 100)
-    var pending = 2
-    istore().write(0, zeros, function (err) {
-      t.ifError(err)
-      if (--pending === 0) write(0)
-    })
-    mstore.write(0, zeros, function (err) {
-      t.ifError(err)
-      if (--pending === 0) write(0)
-    })
-  })()
-
-  function write (i) {
-    if (i === nwrites) return read(0)
-    var offset = Math.floor(Math.random() * 500)
-    var buf = randombytes(Math.floor(Math.random() * 100))
-    var pending = 2
-    istore().write(offset, buf, function (err) {
-      t.ifError(err)
-      if (--pending === 0) read(i + 1)
-    })
-    mstore.write(offset, buf, function (err) {
-      t.ifError(err)
-      if (--pending === 0) read(i + 1)
-    })
-  }
-
-  function read (i) {
-    if (i === nreads) return
-    var offset = Math.floor(Math.random() * 650)
-    var len = Math.floor(Math.random() * 100)
-    var pending = 2
-    var idata = {}
-    var mdata = {}
-    var store = istore()
-    store.read(offset, len, function (err, buf) {
-      idata = { err: err, buf: buf, length: store.length }
-      if (--pending === 0) check()
-    })
-    mstore.read(offset, len, function (err, buf) {
-      mdata = { err: err, buf: buf, length: mstore.length }
-      if (--pending === 0) check()
-    })
-    function check () {
-      t.deepEqual(idata, mdata)
-      write(i + 1)
+test('reopen', async function (t) {
+  t.test('reopen', async function (t) {
+    const size = sample(1, 1024 * sample(1, 8))
+    let rai = storage('test', { size })
+    const ram = new RAM({ pageSize: size })
+    const max = sample(size, size * 10) // max bytes written to storage
+    const wnum = sample(1, 10) // number of random write ops
+    const rnum = sample(1, 3) // number of random read ops per write
+    
+    const reopenMaybe = async () => {
+      console.log('reopen maybe...')
+      if (Math.random() <= 0.75) {
+        console.log('early return')
+        return rai
+      }
+      console.log('closing', rai.length)
+      await (new Promise((res) => setTimeout(res, 1000)))
+      // await (new Promise((res, rej) => rai.close((e, d) => (e) ? rej(e) : res(d))))
+      console.log('reopening')
+      const _rai = new RAI(rai.name, { prefix: rai.prefix, size: rai.size })
+      console.log('opening')
+      await (new Promise((res, rej) => _rai.open((e, d) => (e) ? rej(e) : res(d))))
+      console.log('opened', _rai.length)
+      return new Promise((res) => setImmediate(res, _rai))
     }
-  }
-})
+
+    for (let i = 0; i < wnum; i++) {
+      rai = await reopenMaybe()
+      console.log('finished...')
+      console.log('continuing...')
+      console.log('lens prewrite', rai.length, ram.length, rai.size)
+      const offset = sample(0, max - 1) // random offset to write from
+      const size = sample(0, (max - 1) - offset) // random num of bytes to write
+      const data = randombytes(size) // random bytes
+      await Promise.all([write(rai, offset, data), write(ram, offset, data)])
+      console.log('lens postwrite', rai.length, ram.length)
+      t.is(rai.length, ram.length)
+      for (let j = 0; j < rnum; j++) {
+        // const rai = await reopenMaybe()
+        const offset = sample(0, rai.length - 1) // random offset to read from
+        const size = sample(1, (rai.length - 1) - offset) // random num of bytes to read
+        const bufs = await Promise.all([read(rai, offset, size), read(ram, offset, size)])
+        t.ok(!b4a.compare(...bufs))
+      }
+    }
+
+    const maxpage = Math.floor((rai.length - 1) / size)
+    for (let page = 0; page < maxpage; page++) {
+      // const rai = await reopenMaybe()
+      const offset = page * size
+      const bufs = await Promise.all([read(rai, offset, size), read(ram, offset, size)])
+      t.ok(!b4a.compare(...bufs))
+    }
+  })
+}).catch((err) => console.error(err))
+  
