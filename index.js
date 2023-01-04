@@ -223,17 +223,12 @@ module.exports = class RandomAccessIDB extends RandomAccessStorage {
 
   _unlink (req) {
     const cb = req.callback.bind(req)
-    const [store] = this._store('readwrite')
-    const clear = store.clear()
-    clear.onerror = () => cb(clear.error)
-    clear.onsuccess = () => {
-      this.close((err) => {
-        if (err) return cb(err)
-        const del = this.indexedDB.deleteDatabase(this.id)
-        del.onerror = () => cb(del.error)
-        del.onsuccess = () => cb(null)
-      })
-    }
+    this.close((err) => {
+      if (err) return cb(err)
+      const del = this.indexedDB.deleteDatabase(this.id)
+      del.onerror = () => cb(del.error)
+      del.onsuccess = () => cb(null)
+    })
   }
 
   _page (key, upsert, cb) {

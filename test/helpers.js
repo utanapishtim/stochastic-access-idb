@@ -4,7 +4,10 @@ const RAI = require('../')
 let count = 0
 exports.teardown = () => {
   count++
+  let called = false
   return () => {
+    if (called) return
+    called = true
     setImmediate(() => {
       if (--count > 0) return
       window && window.close()
@@ -32,3 +35,4 @@ exports.del = (ras, o, s) => util.promisify(ras.del.bind(ras))(o, s)
 exports.truncate = (ras, o) => util.promisify(ras.truncate.bind(ras))(o)
 exports.close = (ras) => util.promisify(ras.close.bind(ras))()
 exports.open = (ras) => util.promisify(ras.open.bind(ras))()
+exports.unlink = (ras) => util.promisify(ras.unlink.bind(ras))()
