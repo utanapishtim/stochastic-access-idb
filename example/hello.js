@@ -1,6 +1,6 @@
-var RAI = require('../')
+const RAI = require('../')
 const storage = RAI('dbname')
-var cool = storage('cool.txt')
+const cool = storage('cool.txt')
 
 cool.write(100, Buffer.from('GREETINGS'), function (err) {
   if (err) return console.error(err)
@@ -13,5 +13,4 @@ cool.write(100, Buffer.from('GREETINGS'), function (err) {
     if (err) return console.error(err)
     console.log(buf.toString()) // GREETINGS
   })
-
 })

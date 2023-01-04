@@ -7,9 +7,6 @@
     "b4a": "^1.6.1",
     "compact-encoding": "^2.11.0",
     "is-options": "^1.0.2",
-    "mutexify": "^1.4.0",
-    "nanodebug": "^0.0.0",
-    "queue-tick": "^1.0.1",
     "random-access-storage": "^3.0.0"
   },
   "devDependencies": {
@@ -17,13 +14,13 @@
     "browser-run": "^11.0.0",
     "browserify": "^17.0.0",
     "open-cli": "^7.1.0",
-    "opn": "^6.0.0",
     "random-access-memory": "^6.1.0",
     "randombytes": "^2.1.0",
+    "standard": "^17.0.0",
     "tape": "^5.0.1"
   },
   "scripts": {
-    "test": "browserify test/index.js | browser-run",
+    "test": "standard && browserify test/index.js | browser-run",
     "build-example": "browserify example/hello.js > example/bundle.js && open-cli example/index.html"
   },
   "keywords": [

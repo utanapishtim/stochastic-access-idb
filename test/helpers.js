@@ -1,32 +1,20 @@
 const util = require('util')
-const b4a = require('b4a')
+const RAI = require('../')
 
-exports.promisify = function promisify (rai) {
-  console.log('start')
-  const fns = ['open', 'read', 'write', 'del', 'truncate', 'stat', 'suspend', 'close', 'unlink']
-  const props = ['size', 'indexedDB', 'version', 'prefix', 'name', 'id', 'db', 'length', 'log']
-  const iface = {}
-  for (const fn of fns) {
-    if (fn !== 'read') {
-      iface[fn] = util.promisify(rai[fn].bind(rai))
-      continue
-    }
-    iface[fn] = (o, s) => {
-      return new Promise((resolve, reject) => {
-        rai.read(o, s, (err, buf) => {
-          if (err) {
-            console.error('error', err)
-            return reject(err)
-          }
-          console.log('buf')
-          return resolve(buf)
-        })
-      })
-    }
+let count = 0
+exports.teardown = () => {
+  count++
+  return () => {
+    setImmediate(() => {
+      if (--count > 0) return
+      window && window.close()
+      process.exit(0)
+    })
   }
-  for (const prop of props) Object.assign(iface, { get [prop] () { return rai[prop] } })
-  iface.rai = rai
-  return iface
+}
+
+exports.storage = (name = `name-${Math.random()}`, opts = {}) => {
+  return new RAI({ prefix: `prefix-${Math.random()}`, name, size: 1024, ...opts })
 }
 
 exports.sample = function sample (min, max) {
@@ -42,5 +30,5 @@ exports.write = (ras, o, b) => util.promisify(ras.write.bind(ras))(o, b)
 exports.read = (ras, o, s) => util.promisify(ras.read.bind(ras))(o, s)
 exports.del = (ras, o, s) => util.promisify(ras.del.bind(ras))(o, s)
 exports.truncate = (ras, o) => util.promisify(ras.truncate.bind(ras))(o)
-exports.close = (ras) => new Promise((res, rej) => ras.close((e, d) => (e) ? rej(e) : res(d)))
-exports.open = (ras) => new Promise((res, rej) => ras.open((e, d) => (e) ? rej(e) : res(d)))
+exports.close = (ras) => util.promisify(ras.close.bind(ras))()
+exports.open = (ras) => util.promisify(ras.open.bind(ras))()

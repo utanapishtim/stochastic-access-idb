@@ -1,7 +1,6 @@
-// require("./big.js");
-// require("./blocks.js");
-// require("./multifile.js");
-// require("./random.js");
-require("./reopen.js");
-// require("./simple.js")
-// require('./test.js')
+require('./big.js')
+require('./multifile.js')
+require('./random.js')
+require('./del.js')
+require('./reopen.js')
+require('./simple.js')
