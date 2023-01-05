@@ -16,7 +16,7 @@
     "open-cli": "^7.1.0",
     "random-access-memory": "^6.1.0",
     "randombytes": "^2.1.0",
-    "standard": "^17.0.0",
+    "standard": "^17.0.0"
   },
   "scripts": {
     "test": "standard && browserify test/index.js | browser-run",
