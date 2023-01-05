@@ -2,23 +2,28 @@ const util = require('util')
 const RAI = require('../')
 
 let count = 0
+
 exports.teardown = () => {
   count++
-  let called = false
-  return () => {
-    if (called) return
-    called = true
-    setImmediate(() => {
-      if (--count > 0) return
-      window && window.close()
-      process.exit(0)
-    })
+  return once(() => setImmediate(shutdown))
+
+  function shutdown () {
+    if (--count > 0) return
+    window && window.close()
+    process.exit(0)
   }
 }
 
-exports.storage = (name = `name-${Math.random()}`, opts = {}) => {
-  return new RAI({ prefix: `prefix-${Math.random()}`, name, size: 1024, ...opts })
+function once (f) {
+  let flag = false
+  return (...args) => {
+    if (flag) return
+    flag = true
+    return f(...args)
+  }
 }
+
+exports.storage = (name = `name-${Math.random()}`, opts = {}) => RAI.storage(`prefix-${Math.random()}`)(name, opts)
 
 exports.sample = function sample (min, max) {
   if (min > max) {

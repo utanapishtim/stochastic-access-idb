@@ -17,7 +17,7 @@ module.exports = class RandomAccessIDB extends RandomAccessStorage {
   db = null
   length = 0
 
-  static from (prefix, opts = {}) {
+  static storage (prefix, opts = {}) {
     return function (name, _opts = {}) {
       if (isOptions(name)) {
         _opts = name

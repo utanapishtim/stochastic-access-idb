@@ -21,7 +21,7 @@
   },
   "scripts": {
     "test": "standard && browserify test/index.js | browser-run",
-    "build-example": "browserify example/hello.js > example/bundle.js && open-cli example/index.html"
+    "example": "browserify example/hello.js > example/bundle.js && open-cli example/index.html"
   },
   "keywords": [
     "random-access",

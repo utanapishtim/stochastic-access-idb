@@ -1,5 +1,5 @@
 const RAI = require('../')
-const storage = RAI('dbname')
+const storage = RAI.storage('dbname')
 const cool = storage('cool.txt')
 
 cool.write(100, Buffer.from('GREETINGS'), function (err) {
