@@ -20,7 +20,7 @@ test('reopen', async function (t) {
   const reopenMaybe = async () => {
     if (Math.random() <= 0.75) return rai
     await close(rai)
-    const _rai = new RAI(rai.name, { prefix: rai.prefix, size: rai.size })
+    const _rai = new RAI(rai.name, { dbname: rai.dbname, size: rai.size })
     await open(_rai)
     return _rai
   }
@@ -34,7 +34,7 @@ test('reopen', async function (t) {
     t.is(rai.length, ram.length)
     for (let j = 0; j < rnum; j++) {
       rai = await reopenMaybe()
-      const offset = sample(0, rai.length - 1) // random offset to read from
+      const offset = sample(0, Math.floor(0, rai.length - 1)) // random offset to read from
       const size = sample(1, (rai.length - 1) - offset) // random num of bytes to read
       const bufs = await Promise.all([read(rai, offset, size), read(ram, offset, size)])
       t.ok(!b4a.compare(...bufs))
