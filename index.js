@@ -18,18 +18,18 @@ const lexintEnc = {
 }
 
 module.exports = class RandomAccessIDB extends RandomAccessStorage {
-  indexedDB = window.indexedDB
+  _indexedDB = window.indexedDB
   _dbs = DBS
+
   db = null
-  codec = null
-  version = 1
   dbname = DEFAULT_DBNAME
+  version = 1
   name = null
   size = DEFAULT_PAGE_SIZE
   length = 0
   codecs = {}
 
-  static storage (dbname, opts = {}) {
+  static storage (dbname = DEFAULT_DBNAME, opts = {}) {
     return function (name, _opts = {}) {
       if (isOptions(name)) {
         _opts = name
@@ -50,7 +50,7 @@ module.exports = class RandomAccessIDB extends RandomAccessStorage {
     if (opts.size) this.size = opts.size || this.size
     if (opts.dbname) this.dbname = opts.dbname || this.dbname
     if (opts.version) this.version = opts.version || this.version
-    if (opts.indexedDB) this.indexedDB = opts.indexedDB
+    if (opts.indexedDB) this._indexedDB = opts.indexedDB || this._indexedDB
     if (opts.db) this.db = opts.db
 
     if (!name) throw new Error('Must provide name for RandomAccessIDB instance!')
@@ -64,31 +64,6 @@ module.exports = class RandomAccessIDB extends RandomAccessStorage {
     this.codecs = { root, ns, meta, page }
   }
 
-  _store (mode) {
-    const txn = this.db.transaction([this.dbname], mode)
-    return txn.objectStore(this.dbname)
-  }
-
-  _get (store, key, codec, cb) {
-    cb = once(cb)
-    try {
-      const req = store.get(codec.encode(key))
-      req.onerror = (err) => cb(err || new Error('db.get aborted', key))
-      req.onsuccess = () => cb(null, req.result)
-    } catch (err) {
-      return cb(err)
-    }
-  }
-
-  _page (store, key, upsert, cb) {
-    this._get(store, key, this.codecs.page, (err, page) => {
-      if (err) return cb(err)
-      if (page || !upsert) return cb(null, page)
-      page = b4a.alloc(this.size)
-      return cb(null, page)
-    })
-  }
-
   _open (req) {
     const cb = once(req.callback.bind(req))
 
@@ -100,7 +75,7 @@ module.exports = class RandomAccessIDB extends RandomAccessStorage {
       return this._get(store, 'length', this.codecs.meta, onlen.bind(this))
     }
 
-    const open = this.indexedDB.open(this.dbname, this.version)
+    const open = this._indexedDB.open(this.dbname, this.version)
 
     open.onerror = onerror
     open.onsuccess = onopen.bind(this)
@@ -153,14 +128,14 @@ module.exports = class RandomAccessIDB extends RandomAccessStorage {
 
     if (!this.length) return cb(null, st)
 
-    let idx = 0
     const maxidx = Math.floor((this.length - 1) / this.size)
+    let idx = 0
 
     this._page(store, idx, false, onpage.bind(this))
 
     function onpage (err, page) {
       if (err) return cb(err)
-      st.blocks += (page.byteLength) ? Math.ceil(1, Math.floor(page.byteLength / BLOCK_SIZE)) : 0
+      st.blocks += (page && page.byteLength) ? Math.ceil(1, Math.floor(page.byteLength / BLOCK_SIZE)) : 0
       if (++idx < maxidx) return this._page(store, idx, false, onpage.bind(this))
       else return cb(null, st)
     }
@@ -170,11 +145,11 @@ module.exports = class RandomAccessIDB extends RandomAccessStorage {
     const cb = req.callback.bind(req)
     const store = this._store('readonly')
 
+    if (req.offset + req.size > this.length) return cb(new Error('Could not satisfy length'))
+
     let idx = Math.floor(req.offset / this.size) // index of page
     let rel = req.offset - idx * this.size // page-relative start
     let start = 0
-
-    if (req.offset + req.size > this.length) return cb(new Error('Could not satisfy length'))
 
     const data = b4a.alloc(req.size)
 
@@ -182,16 +157,19 @@ module.exports = class RandomAccessIDB extends RandomAccessStorage {
 
     function onpage (err, page) {
       if (err) cb(err)
-      const available = this.size - rel // how many bytes remain in this page from relative offset
-      const wanted = req.size - start // total remaining bytes we want to read
-      // size of next read is floor of remaining bytes in page or total remaining bytes to read
-      const len = Math.floor(available, wanted)
-      const end = rel + len // end offset of next read within this page
+
+      const available = this.size - rel
+      const wanted = req.size - start
+      const len = Math.min(available, wanted)
+      const end = rel + len
+
       if (page) b4a.copy(page, data, start, rel, end)
-      start += len // we've read <len> more bytes, so adjust "start"
-      rel = 0 // if there's more to read, it starts at the beginning of the next page
-      if (start < req.size) return this._page(store, ++idx, false, onpage.bind(this)) // if more, read
-      return cb(null, data) // if not, finish
+
+      start += len
+      rel = 0
+
+      if (start < req.size) return this._page(store, ++idx, false, onpage.bind(this))
+      return cb(null, data)
     }
   }
 
@@ -202,34 +180,33 @@ module.exports = class RandomAccessIDB extends RandomAccessStorage {
 
     let idx = Math.floor(req.offset / this.size)
     let rel = req.offset - idx * this.size
-    let start = 0 // offset in data to write we are copying from
+    let start = 0
 
-    const len = req.offset + req.size
+    const length = Math.max(this.length, req.offset + req.size)
     const ops = []
 
     return this._page(store, idx, true, onpage.bind(this))
 
     function onpage (err, page) {
       if (err) return cb(err)
-      // num bytes we can write in this page
+
       const free = this.size - rel
-      // end offset in data to write we are copying from
-      //  if: num bytes we can write is less than remaining bytes to write
-      //  then: copy num bytes we can write
-      //  else: copy remaining bytes
       const end = (free < (req.size - start)) ? start + free : req.size
+
       b4a.copy(req.data, page, rel, start, end)
-      start = end // update offset we begin writing from
-      rel = 0 // update rel offset in page we will write to
-      ops.push({ type: 'put', key: codecs.page.encode(idx), value: page }) // batch write
+      ops.push({ type: 'put', key: codecs.page.encode(idx), value: page })
+
+      start = end
+      rel = 0
+
       if (start < req.size) return this._page(store, ++idx, true, onpage.bind(this))
-      if (len > this.length) ops.push({ type: 'put', key: codecs.meta.encode('length'), value: len })
+      ops.push({ type: 'put', key: codecs.meta.encode('length'), value: length })
       return this._batch(store, ops, onbatch.bind(this))
     }
 
     function onbatch (err) {
       if (err) return cb(err)
-      if (len > this.length) this.length = len
+      this.length = length
       return cb(null)
     }
   }
@@ -237,12 +214,13 @@ module.exports = class RandomAccessIDB extends RandomAccessStorage {
   _del (req) {
     const cb = req.callback.bind(req)
     const store = this._store('readwrite')
+
     if (req.offset >= this.length || req.size === 0) return cb(null)
     if (req.size === Infinity) req.size = Math.max(0, this.length - req.offset)
-    
+
     const { codecs } = this
     const ops = []
-    const lst = req.offset + req.size
+    const length = ((req.offset + req.size) >= this.length) ? req.offset : this.length
 
     let idx = Math.floor(req.offset / this.size)
     let rel = req.offset - idx * this.size
@@ -252,28 +230,30 @@ module.exports = class RandomAccessIDB extends RandomAccessStorage {
 
     function onpage (err, page) {
       if (err) return cb(err)
-      const available = this.size - rel // bytes in page we can delete
-      const wanted = req.size - start // total bytes left to delete
-      const len = Math.floor(available, wanted) // num bytes to remove in this del
-      const end = rel + len // offset of last byte to remove in this page
-      if (rel === 0 && len === this.size) { // del entire page
+
+      const available = this.size - rel
+      const wanted = req.size - start
+      const len = Math.min(available, wanted)
+      const end = rel + len
+
+      if (rel === 0 && len === this.size) {
         ops.push({ type: 'del', key: codecs.page.encode(idx) })
-      } else { // del within page
+      } else {
         b4a.fill(page, 0, rel, end)
         ops.push({ type: 'put', key: codecs.page.encode(idx), value: page })
       }
+
       start += len
       rel = 0
-      if (start < req.size) return this._page(store, ++idx, false, onpage.bind(this)) // if more, del
-      if (lst >= this.length) {
-        ops.push({ type: 'put', key: codecs.meta.encode('length'), value: req.offset })
-      }
-      return this._batch(store, ops, onbatch.bind(this)) // if not, finish
+
+      if (start < req.size) return this._page(store, ++idx, false, onpage.bind(this))
+      ops.push({ type: 'put', key: codecs.meta.encode('length'), value: length })
+      return this._batch(store, ops, onbatch.bind(this))
     }
 
     function onbatch (err) {
       if (err) return cb(err)
-      if (lst >= this.length) this.length = req.offset
+      this.length = length
       return cb(null)
     }
   }
@@ -288,14 +268,39 @@ module.exports = class RandomAccessIDB extends RandomAccessStorage {
       ))
     }
 
-    const del = this.indexedDB.deleteDatabase(this.dbname)
+    const del = this._indexedDB.deleteDatabase(this.dbname)
     del.onerror = () => cb(del.error)
     del.onsuccess = () => cb(null)
   }
 
+  _store (mode) {
+    const txn = this.db.transaction([this.dbname], mode)
+    return txn.objectStore(this.dbname)
+  }
+
+  _get (store, key, codec, cb) {
+    cb = once(cb)
+    try {
+      const req = store.get(codec.encode(key))
+      req.onerror = (err) => cb(err)
+      req.onsuccess = () => cb(null, req.result)
+    } catch (err) {
+      return cb(err)
+    }
+  }
+
+  _page (store, key, upsert, cb) {
+    this._get(store, key, this.codecs.page, (err, page) => {
+      if (err) return cb(err)
+      if (page || !upsert) return cb(null, page)
+      page = b4a.alloc(this.size)
+      return cb(null, page)
+    })
+  }
+
   _batch (store, ops = [], cb) {
     cb = once(cb)
-    
+
     let error = null
 
     const txn = store.transaction
@@ -307,7 +312,7 @@ module.exports = class RandomAccessIDB extends RandomAccessStorage {
       try {
         (type === 'del') ? store.delete(key) : store.put(value, key)
         if (idx < ops.length - 1) return next(idx + 1)
-        else txn?.commit()
+        else if (txn.commit) txn.commit()
       } catch (err) {
         error = err
         txn.abort()
