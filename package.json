@@ -1,7 +1,7 @@
 {
   "name": "@storyboard-fm/stochastic-access-idb",
   "description": "[random-access][1]-compatible indexedDB storage layer",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "main": "index.js",
   "dependencies": {
     "b4a": "^1.6.1",
