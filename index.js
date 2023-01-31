@@ -50,8 +50,6 @@ module.exports = class RandomAccessIDB extends RandomAccessStorage {
     if (opts.size) this.size = opts.size || this.size
     if (opts.dbname) this.dbname = opts.dbname || this.dbname
     if (opts.version) this.version = opts.version || this.version
-    if (opts.indexedDB) this._indexedDB = opts.indexedDB || this._indexedDB
-    if (opts.db) this.db = opts.db
 
     if (!name) throw new Error('Must provide name for RandomAccessIDB instance!')
     this.name = name
@@ -256,21 +254,6 @@ module.exports = class RandomAccessIDB extends RandomAccessStorage {
       this.length = length
       return cb(null)
     }
-  }
-
-  _unlink (req) {
-    const cb = once(req.callback.bind(req))
-    const memo = this._dbs.get(this.dbname)
-
-    if (memo && memo.refs) {
-      return cb(new Error(
-        `Close all RandomAccessIDB instances for dbname = "${this.dbname}" before unlinking!`
-      ))
-    }
-
-    const del = this._indexedDB.deleteDatabase(this.dbname)
-    del.onerror = () => cb(del.error)
-    del.onsuccess = () => cb(null)
   }
 
   _store (mode) {

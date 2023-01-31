@@ -1,5 +1,4 @@
 require('./big.js')
-require('./unlink.js')
 require('./multifile.js')
 require('./random.js')
 require('./del.js')
