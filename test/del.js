@@ -15,6 +15,7 @@ test('del', function (t) {
     await del(rai, sample(0, rai.length - 1), 0)
     for (const j in pages) {
       const buf = await read(rai, j * size, size)
+      console.log()
       t.ok(!b4a.compare(buf, pages[j]))
     }
   })

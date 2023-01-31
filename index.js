@@ -2,28 +2,40 @@ const RandomAccessStorage = require('random-access-storage')
 const isOptions = require('is-options')
 const b4a = require('b4a')
 const cenc = require('compact-encoding')
+const SubEnc = require('sub-encoder')
+const once = require('once')
 
 const DEFAULT_PAGE_SIZE = 4 * 1024 // 4096
-const LOGICAL_BLOCK_SIZE = 1024 / 2 // 512
-const DEFAULT_PREFIX = 'random-access-idb'
+const BLOCK_SIZE = 512
+const DEFAULT_DBNAME = 'random-access-idb'
+
+// dbname: String -> { db: IndexedDB, refs: Number }
+const DBS = new Map()
+
+const lexintEnc = {
+  encode (obj) { return cenc.encode(cenc.lexint, obj) },
+  decode (buf) { return cenc.decode(cenc.lexint, buf) }
+}
 
 module.exports = class RandomAccessIDB extends RandomAccessStorage {
-  size = DEFAULT_PAGE_SIZE
-  indexedDB = window.indexedDB
-  version = 1
-  prefix = DEFAULT_PREFIX
-  name = null
-  id = null
-  db = null
-  length = 0
+  _indexedDB = window.indexedDB
+  _dbs = DBS
 
-  static storage (prefix, opts = {}) {
+  db = null
+  dbname = DEFAULT_DBNAME
+  version = 1
+  name = null
+  size = DEFAULT_PAGE_SIZE
+  length = 0
+  codecs = {}
+
+  static storage (dbname = DEFAULT_DBNAME, opts = {}) {
     return function (name, _opts = {}) {
       if (isOptions(name)) {
         _opts = name
         name = _opts.name
       }
-      return new RandomAccessIDB(name, Object.assign({}, opts, _opts, { prefix }))
+      return new RandomAccessIDB(name, Object.assign({}, opts, _opts, { dbname }))
     }
   }
 
@@ -35,55 +47,74 @@ module.exports = class RandomAccessIDB extends RandomAccessStorage {
       name = opts.name
     }
 
-    if (opts.size) this.size = opts.size
-    if (opts.prefix) this.prefix = opts.prefix
+    if (opts.size) this.size = opts.size || this.size
+    if (opts.dbname) this.dbname = opts.dbname || this.dbname
     if (opts.version) this.version = opts.version || this.version
-    if (opts.db) this.db = opts.db
-    if (opts.indexedDB) this.indexedDB = window.indexedDB
 
-    if (!name) throw new Error('Must provide name for random-access-idb instance!')
+    if (!name) throw new Error('Must provide name for RandomAccessIDB instance!')
     this.name = name
-    this.id = this.prefix + '/' + this.name
+
+    const root = new SubEnc(this.dbname, { keyEncoding: 'utf-8' })
+    const ns = root.sub(this.name)
+    const meta = ns.sub('meta')
+    const page = ns.sub('page', { keyEncoding: lexintEnc })
+
+    this.codecs = { root, ns, meta, page }
   }
 
   _open (req) {
-    const cb = req.callback.bind(req)
-    const open = this.indexedDB.open(this.id, this.version)
+    const cb = once(req.callback.bind(req))
 
-    open.onerror = onerror
+    if (this._dbs.has(this.dbname)) {
+      const memo = this._dbs.get(this.dbname)
+      memo.refs++
+      this.db = memo.db
+      const store = this._store('readonly')
+      return this._get(store, 'length', this.codecs.meta, onlen.bind(this))
+    }
+
+    const open = this._indexedDB.open(this.dbname, this.version)
+
+    open.onerror = cb
     open.onsuccess = onopen.bind(this)
     open.onupgradeneeded = onupgradeneeded.bind(this)
 
-    function onerror () {
-      cb(open.error || new Error('error opening indexedDB'))
-    }
-
     function onopen () {
       this.db = open.result
-      this._get('length', 'meta', onlen.bind(this))
-
-      function onlen (err, len = 0) {
-        if (err) return cb(err)
-        this.length = len
-        return cb(null)
-      }
+      this._dbs.set(this.dbname, { db: this.db, refs: 1 })
+      const store = this._store('readonly')
+      this._get(store, 'length', this.codecs.meta, onlen.bind(this))
     }
 
     function onupgradeneeded (event) {
       const db = event.target.result
-      if (!db.objectStoreNames.contains(this.name)) db.createObjectStore(this.name)
-      if (!db.objectStoreNames.contains(`${this.name}/meta`)) db.createObjectStore(`${this.name}/meta`)
+      if (!db.objectStoreNames.contains(this.dbname)) db.createObjectStore(this.dbname)
+    }
+
+    function onlen (err, len = 0) {
+      if (err) return cb(err)
+      this.length = len
+      return cb(null)
     }
   }
 
   _close (req) {
     const cb = req.callback.bind(req)
+    const memo = this._dbs.get(this.dbname)
+
+    if (--memo.refs) return cb(null) // someone in the process still working
+
+    // close db and cleanup
     this.db.close()
+    this._dbs.delete(this.dbname)
+    memo.db = null
+
     return cb(null)
   }
 
   _stat (req) {
     const cb = req.callback.bind(req)
+    const store = this._store('readonly')
 
     const st = {
       size: this.length,
@@ -91,148 +122,156 @@ module.exports = class RandomAccessIDB extends RandomAccessStorage {
       blocks: 0
     }
 
-    const [store] = this._store('readonly')
-    const keys = store.getAllKeys()
-    keys.onerror = () => cb(keys.error)
-    keys.onsuccess = () => {
-      st.blocks = Math.ceil((keys.result.length * this.size) / LOGICAL_BLOCK_SIZE)
-      return cb(null, st)
+    if (!this.length) return cb(null, st)
+
+    const maxidx = Math.floor((this.length - 1) / this.size)
+    let idx = 0
+
+    this._page(store, idx, false, onpage.bind(this))
+
+    function onpage (err, page) {
+      if (err) return cb(err)
+      st.blocks += (page && page.byteLength) ? Math.ceil(1, Math.floor(page.byteLength / BLOCK_SIZE)) : 0
+      if (++idx < maxidx) return this._page(store, idx, false, onpage.bind(this))
+      else return cb(null, st)
     }
   }
 
   _read (req) {
     const cb = req.callback.bind(req)
+    const store = this._store('readonly')
+
+    if (req.offset + req.size > this.length) return cb(new Error('Could not satisfy length'))
+
     let idx = Math.floor(req.offset / this.size) // index of page
     let rel = req.offset - idx * this.size // page-relative start
     let start = 0
 
-    if (req.offset + req.size > this.length) return cb(new Error('Could not satisfy length'))
-
     const data = b4a.alloc(req.size)
 
-    return this._page(cenc.encode(cenc.lexint, idx), false, onpage.bind(this))
+    return this._page(store, idx, false, onpage.bind(this))
 
     function onpage (err, page) {
       if (err) cb(err)
-      const avail = this.size - rel
+
+      const available = this.size - rel
       const wanted = req.size - start
-      const len = (avail < wanted) ? avail : wanted
+      const len = Math.min(available, wanted)
       const end = rel + len
+
       if (page) b4a.copy(page, data, start, rel, end)
+
       start += len
       rel = 0
-      return (start < req.size)
-        ? this._page(cenc.encode(cenc.lexint, ++idx), false, onpage.bind(this))
-        : cb(null, data)
+
+      if (start < req.size) return this._page(store, ++idx, false, onpage.bind(this))
+      return cb(null, data)
     }
   }
 
   _write (req) {
     const cb = req.callback.bind(req)
+    const store = this._store('readwrite')
+    const { codecs } = this
+
     let idx = Math.floor(req.offset / this.size)
     let rel = req.offset - idx * this.size
     let start = 0
 
-    const len = req.offset + req.size
+    const length = Math.max(this.length, req.offset + req.size)
     const ops = []
 
-    return this._page(cenc.encode(cenc.lexint, idx), true, onpage.bind(this))
+    return this._page(store, idx, true, onpage.bind(this))
 
     function onpage (err, page) {
       if (err) return cb(err)
+
       const free = this.size - rel
       const end = (free < (req.size - start)) ? start + free : req.size
+
       b4a.copy(req.data, page, rel, start, end)
+      ops.push({ type: 'put', key: codecs.page.encode(idx), value: page })
+
       start = end
       rel = 0
-      ops.push({ type: 'put', key: cenc.encode(cenc.lexint, idx), value: page })
-      if (start < req.size) {
-        this._page(cenc.encode(cenc.lexint, ++idx), true, onpage.bind(this))
-      } else {
-        if (len > this.length) ops.push({ type: 'put', key: 'length', value: len, db: 'meta' })
-        this._batch(ops, onbatch.bind(this))
-      }
+
+      if (start < req.size) return this._page(store, ++idx, true, onpage.bind(this))
+      ops.push({ type: 'put', key: codecs.meta.encode('length'), value: length })
+      return this._batch(store, ops, onbatch.bind(this))
     }
 
     function onbatch (err) {
       if (err) return cb(err)
-      if (len > this.length) this.length = len
-      return cb(null, null)
+      this.length = length
+      return cb(null)
     }
   }
 
   _del (req) {
     const cb = req.callback.bind(req)
-    if (req.offset >= this.length) return cb(new Error('Could not delete: offset does not exist'))
+    const store = this._store('readwrite')
+
+    if (req.offset >= this.length || req.size === 0) return cb(null)
     if (req.size === Infinity) req.size = Math.max(0, this.length - req.offset)
 
-    const fstpage = Math.floor(req.offset / this.size)
-    const fstidx = req.offset - (fstpage * this.size)
-
-    const lstpage = Math.floor((req.offset + req.size) / this.size)
-    const lstidx = (req.offset + req.size) - (lstpage * this.size)
-
-    const truncating = (req.offset + req.size) >= this.length
-    const interpage = (fstpage === lstpage)
-
+    const { codecs } = this
     const ops = []
+    const length = ((req.offset + req.size) >= this.length) ? req.offset : this.length
 
-    this._get(cenc.encode(cenc.lexint, fstpage), onfstpage.bind(this))
+    let idx = Math.floor(req.offset / this.size)
+    let rel = req.offset - idx * this.size
+    let start = 0
 
-    function onfstpage (err, page) {
+    this._page(store, idx, false, onpage.bind(this))
+
+    function onpage (err, page) {
       if (err) return cb(err)
 
-      if (fstidx || interpage) { // trimming from tail of page OR punching a hole in a single page
-        const end = (interpage) ? lstidx : this.size
-        b4a.fill(page, 0, fstidx, end)
-        ops.push({ type: 'put', key: cenc.encode(cenc.lexint, fstpage), value: page })
+      const available = this.size - rel
+      const wanted = req.size - start
+      const len = Math.min(available, wanted)
+      const end = rel + len
+
+      if (rel === 0 && len === this.size) {
+        ops.push({ type: 'del', key: codecs.page.encode(idx) })
+      } else {
+        b4a.fill(page, 0, rel, end)
+        ops.push({ type: 'put', key: codecs.page.encode(idx), value: page })
       }
 
-      if (interpage) return batch.apply(this)
+      start += len
+      rel = 0
 
-      const start = (fstidx) ? fstpage + 1 : fstpage
-      const end = (truncating) ? lstpage : lstpage - 1
-
-      for (let i = start; i <= end; i++) {
-        ops.push({ type: 'del', key: cenc.encode(cenc.lexint, i) })
-      }
-
-      if (truncating) return batch.apply(this)
-
-      this._get(cenc.encode(cenc.lexint, lstpage), onlstpage.bind(this))
+      if (start < req.size) return this._page(store, ++idx, false, onpage.bind(this))
+      ops.push({ type: 'put', key: codecs.meta.encode('length'), value: length })
+      return this._batch(store, ops, onbatch.bind(this))
     }
 
-    function onlstpage (err, page) {
+    function onbatch (err) {
       if (err) return cb(err)
-      b4a.fill(page, 0, 0, lstidx)
-      ops.push({ type: 'put', key: cenc.encode(cenc.lexint, lstpage), value: page })
-      if (req.offset + req.size >= this.length) {
-        ops.push({ type: 'put', key: 'length', value: req.offset, db: 'meta' })
-      }
-      return batch.apply(this)
-    }
-
-    function batch () {
-      this._batch(ops, (err) => {
-        if (err) return cb(err)
-        if (req.offset + req.size >= this.length) this.length = req.offset
-        return cb(null)
-      })
+      this.length = length
+      return cb(null)
     }
   }
 
-  _unlink (req) {
-    const cb = req.callback.bind(req)
-    this.close((err) => {
-      if (err) return cb(err)
-      const del = this.indexedDB.deleteDatabase(this.id)
-      del.onerror = () => cb(del.error)
-      del.onsuccess = () => cb(null)
-    })
+  _store (mode) {
+    const txn = this.db.transaction([this.dbname], mode)
+    return txn.objectStore(this.dbname)
   }
 
-  _page (key, upsert, cb) {
-    this._get(key, (err, page) => {
+  _get (store, key, codec, cb) {
+    cb = once(cb)
+    try {
+      const req = store.get(codec.encode(key))
+      req.onerror = (err) => cb(err)
+      req.onsuccess = () => cb(null, req.result)
+    } catch (err) {
+      return cb(err)
+    }
+  }
+
+  _page (store, key, upsert, cb) {
+    this._get(store, key, this.codecs.page, (err, page) => {
       if (err) return cb(err)
       if (page || !upsert) return cb(null, page)
       page = b4a.alloc(this.size)
@@ -240,46 +279,22 @@ module.exports = class RandomAccessIDB extends RandomAccessStorage {
     })
   }
 
-  _store (mode) {
-    const txn = this.db.transaction([this.name, `${this.name}/meta`], mode)
-    return [txn.objectStore(this.name), txn.objectStore(`${this.name}/meta`)]
-  }
+  _batch (store, ops = [], cb) {
+    cb = once(cb)
 
-  _get (key, ...args) {
-    const [db, cb] = (args.length === 1) ? ['store', args[0]] : args
-    try {
-      const [store, meta] = this._store('readonly')
-      const req = (db === 'meta' ? meta : store).get(key)
-      const txn = req.transaction
-      txn.onabort = () => cb(txn.error || new Error('idb get aborted'))
-      txn.oncomplete = () => cb(null, req.result)
-    } catch (err) {
-      return cb(err)
-    }
-  }
-
-  _batch (ops = [], cb) {
-    const [store, meta] = this._store('readwrite')
     const txn = store.transaction
-    let idx = 0
-    let error = null
-    txn.onabort = () => cb(error || txn.error || new Error('idb batch op aborted'))
+    txn.onabort = () => cb(txn.error)
     txn.oncomplete = () => cb(null)
 
-    function next () {
-      const op = ops[idx++]
-      const { type, key, value, db } = op
-      const backend = (db === 'meta') ? meta : store
+    for (const { type, key, value } of ops) {
       try {
-        const req = (type === 'del') ? backend.delete(key) : backend.put(value, key)
-        if (idx < ops.length) req.onsuccess = next
-        else if (txn.commit) txn.commit()
+        (type === 'del') ? store.delete(key) : store.put(value, key)
       } catch (err) {
-        error = err
+        txn.error = err
         txn.abort()
       }
     }
 
-    next()
+    if (txn.commit) txn.commit()
   }
 }
