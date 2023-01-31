@@ -75,11 +75,9 @@ module.exports = class RandomAccessIDB extends RandomAccessStorage {
 
     const open = this._indexedDB.open(this.dbname, this.version)
 
-    open.onerror = onerror
+    open.onerror = cb
     open.onsuccess = onopen.bind(this)
     open.onupgradeneeded = onupgradeneeded.bind(this)
-
-    function onerror () { cb(open.error || new Error('error opening indexedDB')) }
 
     function onopen () {
       this.db = open.result
@@ -284,24 +282,19 @@ module.exports = class RandomAccessIDB extends RandomAccessStorage {
   _batch (store, ops = [], cb) {
     cb = once(cb)
 
-    let error = null
-
     const txn = store.transaction
-    txn.onabort = () => cb(error || txn.error)
+    txn.onabort = () => cb(txn.error)
     txn.oncomplete = () => cb(null)
 
-    const next = (idx) => {
-      const { type, key, value } = ops[idx]
+    for (const { type, key, value } of ops) {
       try {
         (type === 'del') ? store.delete(key) : store.put(value, key)
-        if (idx < ops.length - 1) return next(idx + 1)
-        else if (txn.commit) txn.commit()
       } catch (err) {
-        error = err
+        txn.error = err
         txn.abort()
       }
     }
 
-    return next(0)
+    if (txn.commit) txn.commit()
   }
 }
