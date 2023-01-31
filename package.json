@@ -26,6 +26,7 @@
   },
   "keywords": [
     "random-access",
+    "random-access-storage",
     "abstract-random-access",
     "indexeddb",
     "idb",

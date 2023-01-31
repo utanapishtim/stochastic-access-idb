@@ -9,7 +9,8 @@ const DEFAULT_PAGE_SIZE = 4 * 1024 // 4096
 const BLOCK_SIZE = 512
 const DEFAULT_DBNAME = 'random-access-idb'
 
-const DBS = new Map() // dbname: String -> { db: new IndexedDB(), refs: Int, teardown: [() => {}] }
+// dbname: String -> { db: IndexedDB, refs: Number }
+const DBS = new Map()
 
 const lexintEnc = {
   encode (obj) { return cenc.encode(cenc.lexint, obj) },
@@ -52,7 +53,7 @@ module.exports = class RandomAccessIDB extends RandomAccessStorage {
     if (opts.indexedDB) this.indexedDB = opts.indexedDB
     if (opts.db) this.db = opts.db
 
-    if (!name) throw new Error('Must provide name for random-access-idb instance!')
+    if (!name) throw new Error('Must provide name for RandomAccessIDB instance!')
     this.name = name
 
     const root = new SubEnc(this.dbname, { keyEncoding: 'utf-8' })
@@ -160,8 +161,7 @@ module.exports = class RandomAccessIDB extends RandomAccessStorage {
     function onpage (err, page) {
       if (err) return cb(err)
       st.blocks += (page.byteLength) ? Math.ceil(1, Math.floor(page.byteLength / BLOCK_SIZE)) : 0
-      idx += 1
-      if (idx < maxidx) return this._page(store, idx, false, onpage.bind(this))
+      if (++idx < maxidx) return this._page(store, idx, false, onpage.bind(this))
       else return cb(null, st)
     }
   }
@@ -237,12 +237,9 @@ module.exports = class RandomAccessIDB extends RandomAccessStorage {
   _del (req) {
     const cb = req.callback.bind(req)
     const store = this._store('readwrite')
-    // deleting bytes beyond length, they're already gone!
-    if (req.offset >= this.length) return cb(null)
-    // deleting no bytes, they're already gone!
-    if (req.size === 0) return cb(null)
+    if (req.offset >= this.length || req.size === 0) return cb(null)
     if (req.size === Infinity) req.size = Math.max(0, this.length - req.offset)
-
+    
     const { codecs } = this
     const ops = []
     const lst = req.offset + req.size
@@ -287,7 +284,7 @@ module.exports = class RandomAccessIDB extends RandomAccessStorage {
 
     if (memo && memo.refs) {
       return cb(new Error(
-        `Close all RandomAccessIDB instances with dbname=${this.dbname} before unlinking!`
+        `Close all RandomAccessIDB instances for dbname = "${this.dbname}" before unlinking!`
       ))
     }
 
@@ -298,19 +295,19 @@ module.exports = class RandomAccessIDB extends RandomAccessStorage {
 
   _batch (store, ops = [], cb) {
     cb = once(cb)
-    const txn = store.transaction
+    
     let error = null
-    txn.onerror = (e) => cb(e)
-    txn.onabort = () => cb(error || txn.error || new Error('idb batch op aborted'))
+
+    const txn = store.transaction
+    txn.onabort = () => cb(error || txn.error)
     txn.oncomplete = () => cb(null)
 
     const next = (idx) => {
-      const op = ops[idx]
-      const { type, key, value } = op
+      const { type, key, value } = ops[idx]
       try {
         (type === 'del') ? store.delete(key) : store.put(value, key)
-        if (idx + 1 < ops.length) return next(idx + 1)
-        if (txn.commit) txn.commit()
+        if (idx < ops.length - 1) return next(idx + 1)
+        else txn?.commit()
       } catch (err) {
         error = err
         txn.abort()
