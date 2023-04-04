@@ -12,11 +12,6 @@ const DEFAULT_DBNAME = 'random-access-idb'
 // dbname: String -> { db: IndexedDB, refs: Number }
 const DBS = new Map()
 
-const lexintEnc = {
-  encode (obj) { return cenc.encode(cenc.lexint, obj) },
-  decode (buf) { return cenc.decode(cenc.lexint, buf) }
-}
-
 module.exports = class RandomAccessIDB extends RandomAccessStorage {
   _indexedDB = window.indexedDB
   _dbs = DBS
@@ -57,7 +52,12 @@ module.exports = class RandomAccessIDB extends RandomAccessStorage {
     const root = new SubEnc(this.dbname, { keyEncoding: 'utf-8' })
     const ns = root.sub(this.name)
     const meta = ns.sub('meta')
-    const page = ns.sub('page', { keyEncoding: lexintEnc })
+    const page = ns.sub('page', {
+      keyEncoding: {
+        encode (obj) { return cenc.encode(cenc.lexint, obj) },
+        decode (buf) { return cenc.decode(cenc.lexint, buf) }
+      }
+    })
 
     this.codecs = { root, ns, meta, page }
   }
@@ -75,9 +75,11 @@ module.exports = class RandomAccessIDB extends RandomAccessStorage {
 
     const open = this._indexedDB.open(this.dbname, this.version)
 
-    open.onerror = cb
+    open.onerror = onerror
     open.onsuccess = onopen.bind(this)
     open.onupgradeneeded = onupgradeneeded.bind(this)
+
+    function onerror (e) { return cb(e || open.error) }
 
     function onopen () {
       this.db = open.result
@@ -112,6 +114,19 @@ module.exports = class RandomAccessIDB extends RandomAccessStorage {
     return cb(null)
   }
 
+  _blocks (start, end) {
+    const { size } = this
+    const blocks = []
+    for (let n = Math.floor(start / size) * size; n < end; n += size) {
+      blocks.push({
+        page: Math.floor(n / size),
+        start: Math.max(n, start) % size,
+        end: Math.min(n + size, end) % size || size
+      })
+    }
+    return blocks
+  }
+
   _stat (req) {
     const cb = req.callback.bind(req)
     const store = this._store('readonly')
@@ -141,116 +156,147 @@ module.exports = class RandomAccessIDB extends RandomAccessStorage {
     const cb = req.callback.bind(req)
     const store = this._store('readonly')
 
-    if (req.offset + req.size > this.length) return cb(new Error('Could not satisfy length'))
+    if ((req.offset + req.size) > this.length) return cb(new Error('Could not satisfy length'))
 
-    let idx = Math.floor(req.offset / this.size) // index of page
-    let rel = req.offset - idx * this.size // page-relative start
-    let start = 0
+    const blocks = this._blocks(req.offset, req.offset + req.size)
+    const buffers = new Array(blocks.length)
+    const fstBlock = blocks.length > 0 ? blocks[0].page : 0
+    let pending = blocks.length + 1
 
-    const data = b4a.alloc(req.size)
+    const onblock = _onblock.bind(this)
+    for (let i = 0; i < blocks.length; i++) onblock(blocks[i])
 
-    return this._page(store, idx, false, onpage.bind(this))
+    return done()
 
-    function onpage (err, page) {
-      if (err) cb(err)
+    function _onblock (block) {
+      const { page, start, end } = block
+      const len = end - start
+      this._page(store, page, false, (err, buf) => {
+        if (err) return done(err)
+        buffers[page - fstBlock] = (buf)
+          ? (len === this.size)
+              ? buf
+              : b4a.from(buf.subarray(start, end))
+          : b4a.alloc(len)
+        return done()
+      })
+    }
 
-      const available = this.size - rel
-      const wanted = req.size - start
-      const len = Math.min(available, wanted)
-      const end = rel + len
-
-      if (page) b4a.copy(page, data, start, rel, end)
-
-      start += len
-      rel = 0
-
-      if (start < req.size) return this._page(store, ++idx, false, onpage.bind(this))
-      return cb(null, data)
+    function done (err) {
+      if (err) return cb(err)
+      if (!--pending) return cb(null, b4a.concat(buffers))
     }
   }
 
   _write (req) {
     const cb = req.callback.bind(req)
-    const store = this._store('readwrite')
     const { codecs } = this
-
-    let idx = Math.floor(req.offset / this.size)
-    let rel = req.offset - idx * this.size
-    let start = 0
-
     const length = Math.max(this.length, req.offset + req.size)
-    const ops = []
+    const store = this._store('readwrite')
+    const blocks = this._blocks(req.offset, req.offset + req.size)
+    const buffers = {}
+    const done = _done.bind(this)
+    const onblock = _onblock.bind(this)
 
-    return this._page(store, idx, true, onpage.bind(this))
+    let pending = 1
 
-    function onpage (err, page) {
-      if (err) return cb(err)
+    for (const i in blocks) onblock(blocks[i], i)
 
-      const free = this.size - rel
-      const end = (free < (req.size - start)) ? start + free : req.size
+    return done()
 
-      b4a.copy(req.data, page, rel, start, end)
-      ops.push({ type: 'put', key: codecs.page.encode(idx), value: page })
-
-      start = end
-      rel = 0
-
-      if (start < req.size) return this._page(store, ++idx, true, onpage.bind(this))
-      ops.push({ type: 'put', key: codecs.meta.encode('length'), value: length })
-      return this._batch(store, ops, onbatch.bind(this))
+    function _onblock (block, i) {
+      const { page, start, end } = block
+      if (end - start === this.size) return
+      pending++
+      this._page(store, page, true, (err, buf) => {
+        if (err) return done(err)
+        buffers[i] = buf
+        return done()
+      })
     }
 
-    function onbatch (err) {
+    function _done (err) {
       if (err) return cb(err)
-      this.length = length
-      return cb(null)
+      if (--pending > 0) return
+      let j = 0
+
+      for (const i in blocks) {
+        const { page, start, end } = blocks[i]
+        const len = end - start
+        const key = codecs.page.encode(page)
+        if (len === this.size) {
+          store.put(req.data.slice(j, j += len), key)
+        } else {
+          b4a.copy(req.data, buffers[i], start, j, j += len)
+          store.put(buffers[i], key)
+        }
+      }
+
+      store.put(length, codecs.meta.encode('length'))
+
+      const txn = store.transaction
+      txn.onabort = () => cb(txn.error)
+      txn.oncomplete = () => {
+        this.length = length
+        cb(null)
+      }
+      if (txn.commit) txn.commit()
     }
   }
 
   _del (req) {
     const cb = req.callback.bind(req)
+    const { codecs } = this
+    const length = ((req.offset + req.size) >= this.length) ? req.offset : this.length
     const store = this._store('readwrite')
 
     if (req.offset >= this.length || req.size === 0) return cb(null)
     if (req.size === Infinity) req.size = Math.max(0, this.length - req.offset)
 
-    const { codecs } = this
-    const ops = []
-    const length = ((req.offset + req.size) >= this.length) ? req.offset : this.length
+    const blocks = this._blocks(req.offset, req.offset + req.size)
+    const buffers = {}
+    const fstBlock = blocks.length > 0 ? blocks[0].page : 0
+    const onblock = _onblock.bind(this)
+    const done = _done.bind(this)
 
-    let idx = Math.floor(req.offset / this.size)
-    let rel = req.offset - idx * this.size
-    let start = 0
+    let pending = 1
 
-    this._page(store, idx, false, onpage.bind(this))
+    for (let i = 0; i < blocks.length; i++) onblock(blocks[i], i)
 
-    function onpage (err, page) {
-      if (err) return cb(err)
+    return done()
 
-      const available = this.size - rel
-      const wanted = req.size - start
-      const len = Math.min(available, wanted)
-      const end = rel + len
-
-      if (rel === 0 && len === this.size) {
-        ops.push({ type: 'del', key: codecs.page.encode(idx) })
-      } else {
-        b4a.fill(page, 0, rel, end)
-        ops.push({ type: 'put', key: codecs.page.encode(idx), value: page })
-      }
-
-      start += len
-      rel = 0
-
-      if (start < req.size) return this._page(store, ++idx, false, onpage.bind(this))
-      ops.push({ type: 'put', key: codecs.meta.encode('length'), value: length })
-      return this._batch(store, ops, onbatch.bind(this))
+    function _onblock (block, i) {
+      const { page, start, end } = block
+      const len = end - start
+      if (len === this.size) return
+      pending++
+      this._page(store, page, false, (err, buf) => {
+        if (err || !buf) return done(err)
+        b4a.fill(buf, 0, start, end)
+        buffers[page - fstBlock] = buf
+        return done()
+      })
     }
 
-    function onbatch (err) {
+    function _done (err) {
       if (err) return cb(err)
-      this.length = length
-      return cb(null)
+      if (--pending > 0) return
+      for (const i in blocks) {
+        const { page } = blocks[i]
+        const key = codecs.page.encode(page)
+        if (buffers[i]) store.put(buffers[i], key)
+        else store.delete(key)
+      }
+
+      store.put(length, codecs.meta.encode('length'))
+
+      const txn = store.transaction
+      txn.onabort = () => cb(txn.error)
+      txn.oncomplete = () => {
+        this.length = length
+        cb(null)
+      }
+      if (txn.commit) txn.commit()
     }
   }
 
@@ -277,24 +323,5 @@ module.exports = class RandomAccessIDB extends RandomAccessStorage {
       page = b4a.alloc(this.size)
       return cb(null, page)
     })
-  }
-
-  _batch (store, ops = [], cb) {
-    cb = once(cb)
-
-    const txn = store.transaction
-    txn.onabort = () => cb(txn.error)
-    txn.oncomplete = () => cb(null)
-
-    for (const { type, key, value } of ops) {
-      try {
-        (type === 'del') ? store.delete(key) : store.put(value, key)
-      } catch (err) {
-        txn.error = err
-        txn.abort()
-      }
-    }
-
-    if (txn.commit) txn.commit()
   }
 }
