@@ -1,29 +1,18 @@
-var test = require('tape')
-var random = require('../')('testing-' + Math.random(), { size: 5 })
+const b4a = require('b4a')
+const test = require('brittle')
 
-test('simple', function (t) {
-  t.plan(6)
-  var cool = random('cool.txt', { size: 5 })
-  t.equal(cool.name, 'cool.txt')
-  cool.write(100, Buffer.from('GREETINGS'), function (err) {
-    t.ifError(err)
-    cool.read(100, 9, function (err, buf) {
-      t.ifError(err)
-      t.equal(buf.toString(), 'GREETINGS')
-    })
-    cool.read(104, 3, function (err, buf) {
-      t.ifError(err)
-      t.equal(buf.toString(), 'TIN')
-    })
-  })
-})
+const { storage, write, read, del, teardown } = require('./helpers')
 
-var exitCode = 0
-test.onFailure(function () {
-  exitCode = 1
-})
+test('simple', async function (t) {
+  t.teardown(teardown())
 
-test.onFinish(function () {
-  window && window.close()
-  process.exit(exitCode)
+  const cool = storage('cool.txt', { size: 5 })
+  t.is(cool.name, 'cool.txt')
+  await write(cool, 100, b4a.from('GREETINGS'))
+  const fstbuf = await read(cool, 100, 9)
+  t.is(b4a.toString(fstbuf, 'utf-8'), 'GREETINGS')
+  const sndbuf = await read(cool, 104, 3)
+  t.is(b4a.toString(sndbuf, 'utf-8'), 'TIN')
+  await del(cool, 104, 5)
+  await t.exception(() => read(cool, 104, 3))
 })

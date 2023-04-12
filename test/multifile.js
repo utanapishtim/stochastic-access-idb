@@ -1,42 +1,24 @@
-var test = require('tape')
-var random = require('../')('testing-' + Math.random(), { size: 5 })
-var bfrom = require('buffer-from')
+const b4a = require('b4a')
+const test = require('brittle')
+const { write, read, storage, teardown } = require('./helpers')
 
-test('multiple files cool and good', function (t) {
-  t.plan(14)
-  var cool = random('cool.txt')
-  var and = random('and.txt')
-  var good = random('good.txt')
-  cool.write(100, bfrom('GREETINGS'), function (err) {
-    t.ifError(err)
-    cool.read(100, 9, function (err, buf) {
-      t.ifError(err)
-      t.equal(buf.toString(), 'GREETINGS')
-    })
-    cool.read(104, 3, function (err, buf) {
-      t.ifError(err)
-      t.equal(buf.toString(), 'TIN')
-    })
-    and.write(106, bfrom('ORANG'), function (err) {
-      t.ifError(err)
-      and.read(107, 3, function (err, buf) {
-        t.ifError(err)
-        t.equal(buf.toString(), 'RAN')
-        good.write(90, bfrom('DO YOU EVER JUST... TEAPOT'), function (err) {
-          t.ifError(err)
-          good.read(110, 6, function (err, buf) {
-            t.ifError(err)
-            t.equal(buf.toString(), 'TEAPOT')
-            good.read(86, 10, function (err, buf) {
-              t.ifError(err)
-              t.equal(buf.toString(), '\0\0\0\0DO YOU')
-              good.read(110, 10, function (err, buf) {
-                t.ok(err, 'should error when reading past end of file')
-              })
-            })
-          })
-        })
-      })
-    })
-  })
+test('multiple files', async function (t) {
+  t.teardown(teardown())
+  const cool = storage('cool.txt')
+  const and = storage('and.txt')
+  const good = storage('good.txt')
+  await write(cool, 100, b4a.from('GREETINGS', 'utf-8'))
+  const fstbuf = await read(cool, 100, 9)
+  t.is(b4a.toString(fstbuf, 'utf-8'), 'GREETINGS')
+  const sndbuf = await read(cool, 104, 3)
+  t.is(b4a.toString(sndbuf, 'utf-8'), 'TIN')
+  await write(and, 106, b4a.from('ORANG', 'utf-8'))
+  const thdbuf = await read(and, 107, 3)
+  t.is(b4a.toString(thdbuf, 'utf-8'), 'RAN')
+  await write(good, 90, b4a.from('DO YOU EVER JUST... TEAPOT', 'utf-8'))
+  const fthbuf = await read(good, 110, 6)
+  t.is(b4a.toString(fthbuf, 'utf-8'), 'TEAPOT')
+  const ffthbuf = await read(good, 86, 10)
+  t.is(b4a.toString(ffthbuf, 'utf-8'), '\x00\x00\x00\x00DO YOU')
+  await t.exception(() => read(good, 110, 10))
 })
