@@ -1,4 +1,4 @@
-# random-access-idb
+# stochastic-access-idb
 
 [random-access][1]-compatible indexedDB storage layer
 
