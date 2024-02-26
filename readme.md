@@ -28,18 +28,18 @@ cool.write(100, Buffer.from('GREETINGS'), function (err) {
 # api
 
 ``` js
-const RAI = require('random-access-idb')
+const SAI = require('stochastic-access-idb')
 ```
 
-## var db = RAI.storage(dbname, opts)
+## var db = SAI.storage(dbname, opts)
 
 Open an indexedDB database at `dbname`.
 
 Any `opts` provided are forwarded to `db(name, opts)` as default options.
 
-## var file = RAI.storage(dbname, defaultOpts)(name, opts)
-## var file = new RAI(name, [opts])
-## var file = new RAI({ name, ...opts })
+## var file = SAI.storage(dbname, defaultOpts)(name, opts)
+## var file = new SAI(name, [opts])
+## var file = new SAI({ name, ...opts })
 
 Create a handle `file` from `name` and `opts`. Options include:
 
