@@ -13,8 +13,8 @@ Implements every [random-access-storage](https://github.com/random-access-storag
 # example
 
 ``` js
-const RAI = require('random-access-idb')
-const random = RAI.storage('dbname') // or, new RAI('cool.txt', { dbname: 'dbname' })
+const SAI = require('stochastic-access-idb')
+const random = SAI.storage('dbname') // or, new SAI('cool.txt', { dbname: 'dbname' })
 const cool = random('cool.txt')
 cool.write(100, Buffer.from('GREETINGS'), function (err) {
   if (err) return console.error(err)
