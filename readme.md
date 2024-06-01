@@ -14,7 +14,7 @@ Implements every [random-access-storage](https://github.com/random-access-storag
 
 ``` js
 const SAI = require('stochastic-access-idb')
-const random = SAI.storage('dbname') // or, new SAI('cool.txt', { dbname: 'dbname' })
+const random = SAI('dbname')
 const cool = random('cool.txt')
 cool.write(100, Buffer.from('GREETINGS'), function (err) {
   if (err) return console.error(err)
@@ -31,24 +31,17 @@ cool.write(100, Buffer.from('GREETINGS'), function (err) {
 const SAI = require('stochastic-access-idb')
 ```
 
-## var db = SAI.storage(dbname, opts)
+## var db = SAI(dbname, opts)(name)
 
 Open an indexedDB database at `dbname`.
 
 Any `opts` provided are forwarded to `db(name, opts)` as default options.
-
-## var file = SAI.storage(dbname, defaultOpts)(name, opts)
-## var file = new SAI(name, [opts])
-## var file = new SAI({ name, ...opts })
 
 Create a handle `file` from `name` and `opts`. Options include:
 
 ```js
 {
   size: Number, // internal page size in bytes, default: 4096
-  dbname: String, // name of the idb instance that backs RAI instances, default: "random-access-idb"
-  version: Number, // version of idb instance, default: 1
-  name: String, // name of the RAI instance to open, throws if none passed
 }
 ```
 
@@ -78,8 +71,6 @@ Stat the storage, returns an object to callback including:
 ```js
 {
   size: Number, // total number of bytes in storage across all pages
-  blksize: Number, // individual page size
-  blocks: Number // sum of all pages byteLength divided by logical byte size (512 bytes)
 }
 ```
 
@@ -93,7 +84,7 @@ Close the storage instance.
 
 # install
 
-npm install random-access-idb
+npm install stochastic-access-idb
 
 # license
 

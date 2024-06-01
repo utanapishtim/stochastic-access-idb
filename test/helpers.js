@@ -23,7 +23,7 @@ function once (f) {
   }
 }
 
-exports.storage = (name = `name-${Math.random()}`, opts = {}) => RAI.storage(`prefix-${Math.random()}`)(name, opts)
+exports.storage = (name = `name-${Math.random()}`, opts = {}) => RAI(`prefix-${Math.random()}`)(name, opts)
 
 exports.sample = function sample (min, max) {
   if (min > max) {

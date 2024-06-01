@@ -1,327 +1,237 @@
-const RandomAccessStorage = require('random-access-storage')
-const isOptions = require('is-options')
-const b4a = require('b4a')
-const cenc = require('compact-encoding')
-const SubEnc = require('sub-encoder')
-const once = require('once')
+var RandomAccess = require('random-access-storage')
+var inherits = require('inherits')
+var nextTick = require('next-tick')
+var once = require('once')
+var blocks = require('./lib/blocks.js')
+var b4a = require('b4a')
 
-const DEFAULT_PAGE_SIZE = 4 * 1024 // 4096
-const BLOCK_SIZE = 512
-const DEFAULT_DBNAME = 'random-access-idb'
+var DELIM = '\0'
 
-// dbname: String -> { db: IndexedDB, refs: Number }
-const DBS = new Map()
+module.exports = function (dbname, xopts) {
+  if (!xopts) xopts = {}
 
-module.exports = class RandomAccessIDB extends RandomAccessStorage {
-  _indexedDB = window.indexedDB
-  _dbs = DBS
+  var win = typeof window !== 'undefined' ? window
+  : (typeof self !== 'undefined' ? self : {})
 
-  db = null
-  dbname = DEFAULT_DBNAME
-  version = 1
-  name = null
-  size = DEFAULT_PAGE_SIZE
-  length = 0
-  codecs = {}
-
-  static storage (dbname = DEFAULT_DBNAME, opts = {}) {
-    return function (name, _opts = {}) {
-      if (isOptions(name)) {
-        _opts = name
-        name = _opts.name
-      }
-      return new RandomAccessIDB(name, Object.assign({}, opts, _opts, { dbname }))
-    }
+  var idb = xopts.idb || (typeof win !== 'undefined'
+    ? win.indexedDB || win.mozIndexedDB || win.webkitIndexedDB || win.msIndexedDB
+    : null)
+  if (!idb) throw new Error('indexedDB not present and not given')
+  var db = null
+  var dbqueue = []
+  if (typeof idb.open === 'function') {
+    var req = idb.open(dbname)
+    req.addEventListener('upgradeneeded', function () {
+      db = req.result
+      db.createObjectStore('data')
+    })
+    req.addEventListener('success', function () {
+      db = req.result
+      dbqueue.forEach(function (cb) { cb(db) })
+      dbqueue = null
+    })
+  } else {
+    db = idb
   }
-
-  constructor (name, opts = {}) {
-    super()
-
-    if (isOptions(name)) {
+  return function (name, opts) {
+    if (typeof name === 'object') {
       opts = name
       name = opts.name
     }
 
-    if (opts.size) this.size = opts.size || this.size
-    if (opts.dbname) this.dbname = opts.dbname || this.dbname
-    if (opts.version) this.version = opts.version || this.version
+    if (!opts) opts = {}
+    opts.name = name
 
-    if (!name) throw new Error('Must provide name for RandomAccessIDB instance!')
-    this.name = name
+    return new Store(Object.assign({ db: getdb }, xopts, opts))
+  }
+  function getdb (cb) {
+    if (db) nextTick(function () { cb(db) })
+    else dbqueue.push(cb)
+  }
+}
 
-    const root = new SubEnc(this.dbname, { keyEncoding: 'utf-8' })
-    const ns = root.sub(this.name)
-    const meta = ns.sub('meta')
-    const page = ns.sub('page', {
-      keyEncoding: {
-        encode (obj) { return cenc.encode(cenc.lexint, obj) },
-        decode (buf) { return cenc.decode(cenc.lexint, buf) }
-      }
-    })
+class Store extends RandomAccess {
+  constructor (opts) {
+    super(opts)
+    if (!(this instanceof Store)) return new Store(opts)
 
-    this.codecs = { root, ns, meta, page }
+    if (!opts) opts = {}
+    if (typeof opts === 'string') opts = { name: opts }
+    this.size = opts.size || 4096
+    this.name = opts.name
+    this.length = opts.length || 0
+    this._getdb = opts.db
   }
 
-  _open (req) {
-    const cb = once(req.callback.bind(req))
-
-    if (this._dbs.has(this.dbname)) {
-      const memo = this._dbs.get(this.dbname)
-      memo.refs++
-      this.db = memo.db
-      const store = this._store('readonly')
-      return this._get(store, 'length', this.codecs.meta, onlen.bind(this))
-    }
-
-    const open = this._indexedDB.open(this.dbname, this.version)
-
-    open.onerror = onerror
-    open.onsuccess = onopen.bind(this)
-    open.onupgradeneeded = onupgradeneeded.bind(this)
-
-    function onerror (e) { return cb(e || open.error) }
-
-    function onopen () {
-      this.db = open.result
-      this._dbs.set(this.dbname, { db: this.db, refs: 1 })
-      const store = this._store('readonly')
-      this._get(store, 'length', this.codecs.meta, onlen.bind(this))
-    }
-
-    function onupgradeneeded (event) {
-      const db = event.target.result
-      if (!db.objectStoreNames.contains(this.dbname)) db.createObjectStore(this.dbname)
-    }
-
-    function onlen (err, len = 0) {
-      if (err) return cb(err)
-      this.length = len
-      return cb(null)
-    }
-  }
-
-  _close (req) {
-    const cb = req.callback.bind(req)
-    const memo = this._dbs.get(this.dbname)
-
-    if (--memo.refs) return cb(null) // someone in the process still working
-
-    // close db and cleanup
-    this.db.close()
-    this._dbs.delete(this.dbname)
-    memo.db = null
-
-    return cb(null)
-  }
-
-  _blocks (start, end) {
-    const { size } = this
-    const blocks = []
-    for (let n = Math.floor(start / size) * size; n < end; n += size) {
-      blocks.push({
-        page: Math.floor(n / size),
-        start: Math.max(n, start) % size,
-        end: Math.min(n + size, end) % size || size
-      })
-    }
-    return blocks
-  }
-
-  _stat (req) {
-    const cb = req.callback.bind(req)
-    const store = this._store('readonly')
-
-    const st = {
-      size: this.length,
-      blksize: this.size,
-      blocks: 0
-    }
-
-    if (!this.length) return cb(null, st)
-
-    const maxidx = Math.floor((this.length - 1) / this.size)
-    let idx = 0
-
-    this._page(store, idx, false, onpage.bind(this))
-
-    function onpage (err, page) {
-      if (err) return cb(err)
-      st.blocks += (page && page.byteLength) ? Math.ceil(1, Math.floor(page.byteLength / BLOCK_SIZE)) : 0
-      if (++idx < maxidx) return this._page(store, idx, false, onpage.bind(this))
-      else return cb(null, st)
-    }
+  _blocks (i, j) {
+    return blocks(this.size, i, j)
   }
 
   _read (req) {
-    const cb = req.callback.bind(req)
-    const store = this._store('readonly')
+    var self = this
+    var buffers = []
+    self._store('readonly', function (err, store) {
+      if ((self.length || 0) < req.offset + req.size) {
+        return req.callback(new Error('Could not satisfy length'), null)
+      }
+      if (err) return req.callback(err)
+      var offsets = self._blocks(req.offset, req.offset + req.size)
+      var pending = offsets.length + 1
+      var firstBlock = offsets.length > 0 ? offsets[0].block : 0
+      for (var i = 0; i < offsets.length; i++) (function (o) {
+        var key = self.name + DELIM + o.block
+        backify(store.get(key), function (err, ev) {
+          if (err) return req.callback(err)
+          buffers[o.block - firstBlock] = ev.target.result
+            ? b4a.from(ev.target.result.subarray(o.start, o.end))
+            : b4a.alloc(o.end - o.start)
+          if (--pending === 0) req.callback(null, b4a.concat(buffers))
+        })
+      })(offsets[i])
+      if (--pending === 0) req.callback(null, b4a.concat(buffers))
+    })
+  }
 
-    if ((req.offset + req.size) > this.length) return cb(new Error('Could not satisfy length'))
+  _del (req) {
+    var self = this
+    var buffers = []
+    self._store('readwrite', function (err, store) {
+      if (err) return req.callback(err)
+      var offsets = self._blocks(req.offset, Math.min(self.length, req.offset + req.size))
+      var pending = offsets.length + 1
+      var firstBlock = offsets.length > 0 ? offsets[0].block : 0
+      var isTruncation = req.offset + req.size >= self.length
+      for (var i = 0; i < offsets.length; i++) (function (o) {
+        var key = self.name + DELIM + o.block
+        var len = o.end - o.start
 
-    const blocks = this._blocks(req.offset, req.offset + req.size)
-    const buffers = new Array(blocks.length)
-    const fstBlock = blocks.length > 0 ? blocks[0].page : 0
-    let pending = blocks.length + 1
+        // Delete key if truncating and its not a partial block
+        if (isTruncation && (i !== 0 || len === self.size)) {
+          backify(store.delete(key), function (err) {
+            if (err) return req.callback(err)
+            if (--pending === 0) done(store, req)
+          })
+        } else {
+          // Get block to be zeroed
+          backify(store.get(key), function (err, ev) {
+            if (err) return req.callback(err)
+            var block = b4a.from(ev.target.result || b4a.alloc(self.size))
 
-    const onblock = _onblock.bind(this)
-    for (let i = 0; i < blocks.length; i++) onblock(blocks[i])
+            block.fill(0, o.start, o.end)
 
-    return done()
+            // Commit zeros
+            backify(store.put(block, self.name + DELIM + o.block), function (err) {
+              if (err) return req.callback(err)
+              if (--pending === 0) done(store, req)
+            })
+          })
+        }
+      })(offsets[i])
+      if (--pending === 0) done(store, req)
+    })
 
-    function _onblock (block) {
-      const { page, start, end } = block
-      const len = end - start
-      this._page(store, page, false, (err, buf) => {
-        if (err) return done(err)
-        buffers[page - fstBlock] = (buf)
-          ? (len === this.size)
-              ? buf
-              : b4a.from(buf.subarray(start, end))
-          : b4a.alloc(len)
-        return done()
+    function done (store, req) {
+      // Update length in db & on object
+      var length = req.offset + req.size >= self.length ? req.offset : self.length
+      store.put(length, self.name + DELIM + 'length')
+      store.transaction.addEventListener('complete', function () {
+        self.length = length
+        req.callback(null)
       })
-    }
-
-    function done (err) {
-      if (err) return cb(err)
-      if (!--pending) return cb(null, b4a.concat(buffers))
+      store.transaction.addEventListener('error', function (err) {
+        req.callback(err)
+      })
     }
   }
 
   _write (req) {
-    const cb = req.callback.bind(req)
-    const { codecs } = this
-    const length = Math.max(this.length, req.offset + req.size)
-    const store = this._store('readwrite')
-    const blocks = this._blocks(req.offset, req.offset + req.size)
-    const buffers = {}
-    const done = _done.bind(this)
-    const onblock = _onblock.bind(this)
+    var self = this
+    self._store('readwrite', function (err, store) {
+      if (err) return req.callback(err)
+      var offsets = self._blocks(req.offset, req.offset + req.data.length)
+      var pending = 1
+      var buffers = {}
+      for (var i = 0; i < offsets.length; i++) (function (o, i) {
+        if (o.end - o.start === self.size) return
+        pending++
+        var key = self.name + DELIM + o.block
+        backify(store.get(key), function (err, ev) {
+          if (err) return req.callback(err)
+          buffers[i] = b4a.from(ev.target.result || b4a.alloc(self.size))
+          if (--pending === 0) write(store, offsets, buffers)
+        })
+      })(offsets[i], i)
+      if (--pending === 0) write(store, offsets, buffers)
+    })
 
-    let pending = 1
-
-    for (const i in blocks) onblock(blocks[i], i)
-
-    return done()
-
-    function _onblock (block, i) {
-      const { page, start, end } = block
-      if (end - start === this.size) return
-      pending++
-      this._page(store, page, true, (err, buf) => {
-        if (err) return done(err)
-        buffers[i] = buf
-        return done()
-      })
-    }
-
-    function _done (err) {
-      if (err) return cb(err)
-      if (--pending > 0) return
-      let j = 0
-
-      for (const i in blocks) {
-        const { page, start, end } = blocks[i]
-        const len = end - start
-        const key = codecs.page.encode(page)
-        if (len === this.size) {
-          store.put(req.data.slice(j, j += len), key)
+    function write (store, offsets, buffers) {
+      var block
+      for (var i = 0, j = 0; i < offsets.length; i++) {
+        var o = offsets[i]
+        var len = o.end - o.start
+        if (len === self.size) {
+          block = b4a.from(req.data.slice(j, j + len))
         } else {
-          b4a.copy(req.data, buffers[i], start, j, j += len)
-          store.put(buffers[i], key)
+          block = buffers[i]
+          b4a.copy(req.data, block, o.start, j, j + len)
         }
+        store.put(block, self.name + DELIM + o.block)
+        j += len
       }
 
-      store.put(length, codecs.meta.encode('length'))
-
-      const txn = store.transaction
-      txn.onabort = () => cb(txn.error)
-      txn.oncomplete = () => {
-        this.length = length
-        cb(null)
-      }
-      if (txn.commit) txn.commit()
-    }
-  }
-
-  _del (req) {
-    const cb = req.callback.bind(req)
-    const { codecs } = this
-    const length = ((req.offset + req.size) >= this.length) ? req.offset : this.length
-    const store = this._store('readwrite')
-
-    if (req.offset >= this.length || req.size === 0) return cb(null)
-    if (req.size === Infinity) req.size = Math.max(0, this.length - req.offset)
-
-    const blocks = this._blocks(req.offset, req.offset + req.size)
-    const buffers = {}
-    const fstBlock = blocks.length > 0 ? blocks[0].page : 0
-    const onblock = _onblock.bind(this)
-    const done = _done.bind(this)
-
-    let pending = 1
-
-    for (let i = 0; i < blocks.length; i++) onblock(blocks[i], i)
-
-    return done()
-
-    function _onblock (block, i) {
-      const { page, start, end } = block
-      const len = end - start
-      if (len === this.size) return
-      pending++
-      this._page(store, page, false, (err, buf) => {
-        if (err || !buf) return done(err)
-        b4a.fill(buf, 0, start, end)
-        buffers[page - fstBlock] = buf
-        return done()
+      var length = Math.max(self.length || 0, req.offset + req.data.length)
+      store.put(length, self.name + DELIM + 'length')
+      store.transaction.addEventListener('complete', function () {
+        self.length = length
+        req.callback(null)
+      })
+      store.transaction.addEventListener('error', function (err) {
+        req.callback(err)
       })
     }
-
-    function _done (err) {
-      if (err) return cb(err)
-      if (--pending > 0) return
-      for (const i in blocks) {
-        const { page } = blocks[i]
-        const key = codecs.page.encode(page)
-        if (buffers[i]) store.put(buffers[i], key)
-        else store.delete(key)
-      }
-
-      store.put(length, codecs.meta.encode('length'))
-
-      const txn = store.transaction
-      txn.onabort = () => cb(txn.error)
-      txn.oncomplete = () => {
-        this.length = length
-        cb(null)
-      }
-      if (txn.commit) txn.commit()
-    }
   }
 
-  _store (mode) {
-    const txn = this.db.transaction([this.dbname], mode)
-    return txn.objectStore(this.dbname)
-  }
-
-  _get (store, key, codec, cb) {
+  _store (mode, cb) {
     cb = once(cb)
-    try {
-      const req = store.get(codec.encode(key))
-      req.onerror = (err) => cb(err)
-      req.onsuccess = () => cb(null, req.result)
-    } catch (err) {
-      return cb(err)
-    }
-  }
-
-  _page (store, key, upsert, cb) {
-    this._get(store, key, this.codecs.page, (err, page) => {
-      if (err) return cb(err)
-      if (page || !upsert) return cb(null, page)
-      page = b4a.alloc(this.size)
-      return cb(null, page)
+    var self = this
+    self._getdb(function (db) {
+      var tx = db.transaction(['data'], mode)
+      var store = tx.objectStore('data')
+      tx.addEventListener('error', cb)
+      cb(null, store)
     })
   }
+
+  _open (req) {
+    var self = this
+    this._getdb(function (db) {
+      self._store('readonly', function (err, store) {
+        if (err) return req.callback(err)
+        backify(store.get(self.name + DELIM + 'length'), function (err, ev) {
+          if (err) return req.callback(err)
+          self.length = ev.target.result || 0
+          req.callback(null)
+        })
+      })
+    })
+  }
+
+  _close (req) {
+    this._getdb(function (db) {
+      //db.close() // TODO: reopen gracefully. Close breaks with corestore, as innercorestore closes the db
+      return req.callback(null)
+    })
+  }
+
+  _stat (req) {
+    var self = this
+    nextTick(function () {
+      req.callback(null, { size: self.length })
+    })
+  }
+}
+
+function backify (r, cb) {
+  r.addEventListener('success', function (ev) { cb(null, ev) })
+  r.addEventListener('error', cb)
 }

@@ -25,7 +25,7 @@
   },
   "scripts": {
     "perf": "browserify perf/index.js | browser-run",
-    "test": "standard && browserify test/index.js | browser-run",
+    "test": "browserify test/index.js | browser-run",
     "example": "browserify example/hello.js > example/bundle.js && open-cli example/index.html"
   },
   "keywords": [

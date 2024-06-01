@@ -11,7 +11,7 @@ test('reopen', async function (t) {
   t.teardown(teardown())
 
   const size = sample(1, 1024 * sample(1, 8))
-  let rai = storage('test', { size })
+  let rai = RAI('test', { size })('test')
   const ram = new RAM({ pageSize: size })
   const max = sample(size, size * 10) // max bytes written to storage
   const wnum = sample(1, 10) // number of random write ops
@@ -20,8 +20,12 @@ test('reopen', async function (t) {
   const reopenMaybe = async () => {
     if (Math.random() <= 0.75) return rai
     await close(rai)
-    const _rai = new RAI(rai.name, { dbname: rai.dbname, size: rai.size })
+    console.log('closed')
+    const _rai = RAI('test', { size })('test')
+    console.log('_rai', _rai)
+    console.log('opening')
     await open(_rai)
+    console.llg('opened')
     return _rai
   }
 
